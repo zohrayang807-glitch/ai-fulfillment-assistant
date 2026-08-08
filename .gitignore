@@ -1,0 +1,10 @@
+# 数据文件不进版本库（120MB 太大，且不属于"代码"）
+olist/*.csv
+*.csv
+
+# Python 缓存 & Mac 系统文件
+__pycache__/
+.DS_Store
+
+# 环境文件
+.env
