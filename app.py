@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 懂履约的 AI 购物助手 — Streamlit 双栏 Demo
-每轮对话 = 一行，左列对话气泡 + 右列推理链路，自然对齐。
+每轮对话一行：左列对话气泡 + 右列推理链路，1:1 对齐。
 """
 
 import streamlit as st
@@ -11,87 +11,131 @@ from agent import chat
 
 st.set_page_config(page_title="懂履约的 AI 购物助手", layout="wide")
 
-# ── 样式 ──
+# ── 全局样式 ──
 st.markdown("""
 <style>
-/* 气泡 */
-.chat-bubble-user {
-    background: #dcf8c6; padding: 10px 14px; border-radius: 12px 12px 2px 12px;
-    margin: 4px 0; font-size: 0.95rem;
+/* 全局字体 */
+html, body, [class*="css"] { font-family: "Inter", "Noto Sans SC", sans-serif; }
+
+/* 标题 */
+h1 { font-weight: 700 !important; letter-spacing: -0.5px; }
+
+/* 对话气泡 */
+.bubble-user {
+    background: linear-gradient(135deg, #d9fdd3, #c8f7c1);
+    padding: 14px 18px; border-radius: 16px 16px 4px 16px;
+    margin: 6px 0; font-size: 0.95rem; line-height: 1.6;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
-.chat-bubble-assistant {
-    background: #f1f0f0; padding: 10px 14px; border-radius: 12px 12px 12px 2px;
-    margin: 4px 0; font-size: 0.95rem;
+.bubble-ai {
+    background: #f7f7f8;
+    padding: 14px 18px; border-radius: 16px 16px 16px 4px;
+    margin: 6px 0; font-size: 0.95rem; line-height: 1.6;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-/* trace 步骤 */
-.trace-step { padding: 6px 10px; margin: 3px 0; border-radius: 6px; font-size: 0.82rem; }
-.trace-1 { background: #e3f2fd; }
-.trace-2 { background: #e8f5e9; }
-.trace-3 { background: #fff3e0; }
-.trace-4 { background: #f3e5f5; }
-.trace-5 { background: #e0f7fa; }
-/* 两列之间不留多余间距 */
-[data-testid="column"] { padding: 0 8px; }
+
+/* 轮次行容器 */
+.round-row {
+    border: 1px solid #e8e8e8; border-radius: 12px;
+    padding: 20px; margin: 12px 0;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+}
+
+/* trace 步骤卡片 */
+.trace-card {
+    padding: 8px 12px; margin: 4px 0; border-radius: 8px;
+    font-size: 0.82rem; cursor: pointer; transition: all 0.15s;
+}
+.trace-card:hover { transform: translateX(2px); }
+.t1 { background: #e3f2fd; border-left: 3px solid #1976d2; }
+.t2 { background: #e8f5e9; border-left: 3px solid #388e3c; }
+.t3 { background: #fff8e1; border-left: 3px solid #f9a825; }
+.t4 { background: #f3e5f5; border-left: 3px solid #7b1fa2; }
+.t5 { background: #e0f7fa; border-left: 3px solid #00838f; }
+
+/* 输入区固定底部 */
+.input-area {
+    position: sticky; bottom: 0; background: #fff;
+    padding: 16px 0 8px 0; border-top: 1px solid #eee;
+    z-index: 10;
+}
+
+/* 分隔线美化 */
+hr { border: none; border-top: 1px solid #eee; margin: 8px 0; }
+
+/* 列标题 */
+.col-header {
+    font-size: 0.85rem; font-weight: 600; color: #666;
+    text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 12px; padding-bottom: 6px;
+    border-bottom: 2px solid #eee;
+}
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🛒 懂履约的 AI 购物助手")
+st.caption("输入购物问题，看 AI 如何用数据帮你决策 · 左边是你的对话，右边是推理过程")
 
 # ── 初始化 ──
 if "rounds" not in st.session_state:
-    st.session_state.rounds = []  # [{question, answer, trace}]
+    st.session_state.rounds = []
 
 STEP_META = {
-    "①意图识别": ("trace-1", "🎯"),
-    "②参数提取": ("trace-2", "🔧"),
-    "③品类推断": ("trace-3", "🔗"),
-    "④数据查询": ("trace-4", "📊"),
-    "⑤回答生成": ("trace-5", "💬"),
+    "①意图识别": ("t1", "🎯"),
+    "②参数提取": ("t2", "🔧"),
+    "③品类推断": ("t3", "🔗"),
+    "④数据查询": ("t4", "📊"),
+    "⑤回答生成": ("t5", "💬"),
 }
 
-# ── 渲染历史轮次（每轮一行，左右对齐）──
+
+def render_trace(trace):
+    """渲染推理链路步骤"""
+    for t in trace:
+        step = t["step"]
+        css, icon = STEP_META.get(step, ("", "•"))
+        with st.expander(f"{icon}  {step}", expanded=False):
+            st.code(t["content"], language=None)
+
+
+# ── 渲染历史轮次 ──
 for idx, rnd in enumerate(st.session_state.rounds):
+    st.markdown(f'<div class="round-row">', unsafe_allow_html=True)
     col_left, col_right = st.columns(2)
 
     with col_left:
-        st.markdown(f'<div class="chat-bubble-user">🧑 {rnd["question"]}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="chat-bubble-assistant">🤖 {rnd["answer"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="col-header">💬 对话</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="bubble-user">🧑‍💻 {rnd["question"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="bubble-ai">🤖 {rnd["answer"]}</div>', unsafe_allow_html=True)
 
     with col_right:
-        for t in rnd["trace"]:
-            step = t["step"]
-            css, icon = STEP_META.get(step, ("", "•"))
-            with st.expander(f"{icon} {step}", expanded=False):
-                st.code(t["content"], language=None)
+        st.markdown(f'<div class="col-header">🔍 推理链路</div>', unsafe_allow_html=True)
+        render_trace(rnd["trace"])
 
-    st.divider()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ── 输入框 ──
-if user_input := st.chat_input("输入你的问题，例如：买书架送到 SP 要多久？"):
-    # 调用 agent
-    with st.status("🤔 思考中...", expanded=False):
-        time.sleep(0.6)
-        intent_result, params, data, answer, trace = chat(user_input)
+# ── 输入区 ──
+st.markdown("---")
+with st.form("ask_form", clear_on_submit=True):
+    col_input, col_btn = st.columns([5, 1])
+    with col_input:
+        user_input = st.text_input(
+            "你的问题",
+            placeholder="例如：买书架送到 SP 要多久？",
+            label_visibility="collapsed",
+        )
+    with col_btn:
+        submitted = st.form_submit_button("发送 🚀", use_container_width=True)
 
-    # 存储本轮
+if submitted and user_input.strip():
+    with st.spinner("🤔 思考中..."):
+        time.sleep(0.5)
+        intent_result, params, data, answer, trace = chat(user_input.strip())
+
     st.session_state.rounds.append({
-        "question": user_input,
+        "question": user_input.strip(),
         "answer": answer,
         "trace": trace,
     })
-
-    # 立即渲染本轮（左右对齐）
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        st.markdown(f'<div class="chat-bubble-user">🧑 {user_input}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="chat-bubble-assistant">🤖 {answer}</div>', unsafe_allow_html=True)
-
-    with col_right:
-        for t in trace:
-            step = t["step"]
-            css, icon = STEP_META.get(step, ("", "•"))
-            with st.expander(f"{icon} {step}", expanded=False):
-                st.code(t["content"], language=None)
-
     st.rerun()
