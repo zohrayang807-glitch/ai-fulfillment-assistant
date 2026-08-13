@@ -9,24 +9,41 @@ reviews = pd.read_csv(f"{DATA_DIR}/olist_order_reviews_dataset.csv")
 order_items = pd.read_csv(f"{DATA_DIR}/olist_order_items_dataset.csv")
 products = pd.read_csv(f"{DATA_DIR}/olist_products_dataset.csv")
 sellers = pd.read_csv(f"{DATA_DIR}/olist_sellers_dataset.csv")
+cat_trans = pd.read_csv(f"{DATA_DIR}/product_category_name_translation.csv")
+orders = pd.read_csv(f"{DATA_DIR}/olist_orders_dataset.csv")
+
+# 只取已送达订单（与 build_kb 一致）
+delivered_ids = orders[orders["order_status"] == "delivered"]["order_id"]
 
 # ── 关联规则 ─────────────────────────────────────────────────
+# 只取已送达订单的 items（与 build_kb 一致）
+delivered_items = order_items[order_items["order_id"].isin(delivered_ids)]
 # 每个订单取 order_item_id 最小的那条，得到 seller_id 和 product_id
 first_item = (
-    order_items.sort_values("order_item_id")
+    delivered_items.sort_values("order_item_id")
     .groupby("order_id")
     .first()
     .reset_index()[["order_id", "seller_id", "product_id"]]
 )
 
-# 评论 → 订单 → 首商品 → 商品类目
-df = reviews[["order_id", "review_score", "review_comment_message"]].copy()
+# 评论 → 订单 → 首商品 → 商品类目（翻译为英文）
+products_en = products.merge(cat_trans, on="product_category_name", how="left")
+products_en["category_en"] = products_en["product_category_name_english"].fillna(
+    products_en["product_category_name"]
+)
+
+# 评论去重（一个订单只取一条评论，与 build_kb 一致）+ 只取已送达订单
+order_reviews = reviews.drop_duplicates(subset="order_id")[
+    ["order_id", "review_score", "review_comment_message"]
+]
+order_reviews = order_reviews[order_reviews["order_id"].isin(delivered_ids)]
+df = order_reviews.copy()
 df = df.merge(first_item, on="order_id", how="left")
-df = df.merge(products[["product_id", "product_category_name"]], on="product_id", how="left")
+df = df.merge(products_en[["product_id", "category_en"]], on="product_id", how="left")
 df = df.merge(sellers[["seller_id", "seller_city", "seller_state"]], on="seller_id", how="left")
 
 # ── 过滤：办公家具 ──────────────────────────────────────────
-df = df[df["product_category_name"] == "moveis_escritorio"].copy()
+df = df[df["category_en"] == "office_furniture"].copy()
 
 # ── 标记 ────────────────────────────────────────────────────
 df["is_low"] = df["review_score"] <= 2
@@ -39,7 +56,7 @@ n_low = df["is_low"].sum()
 n_low_return = (df["is_low"] & df["has_return_kw"]).sum()
 
 print("=" * 60)
-print("  ① 类目整体（moveis_escritorio）")
+print("  ① 类目整体（office_furniture）")
 print("=" * 60)
 print(f"  总评论数 (n):             {n_total:,}")
 print(f"  差评数 (n):               {n_low:,}")
@@ -84,7 +101,9 @@ else:
 bad_rate = n_bad_low / n_bad * 100
 good_rate = n_good_low / n_good * 100
 cat_ret_rate = n_low_return / n_total * 100
-bad_ret_rate = n_bad_ret / n_bad * 100
+# 全量退货词率（与 build_kb 对齐，分母=全部评论，不仅是差评）
+cat_kw_rate = df["has_return_kw"].sum() / n_total * 100
+bad_kw_rate = bad["has_return_kw"].sum() / n_bad * 100
 
 print("\n" + "=" * 60)
 print("  ④ 对比结论")
@@ -93,4 +112,4 @@ if good_rate > 0:
     print(f"  问题卖家差评率 {bad_rate:.1f}%，是推荐卖家 {good_rate:.1f}% 的 {bad_rate/good_rate:.1f} 倍")
 else:
     print(f"  问题卖家差评率 {bad_rate:.1f}%，推荐卖家差评率 0%（17 笔评论 0 差评）")
-print(f"  问题卖家退货词占比(占总评论) {bad_ret_rate:.2f}%，是类目平均 {cat_ret_rate:.2f}% 的 {bad_ret_rate/cat_ret_rate:.1f} 倍")
+print(f"  问题卖家退货词占比(占总评论) {bad_kw_rate:.2f}%，是类目平均 {cat_kw_rate:.2f}% 的 {bad_kw_rate/cat_kw_rate:.1f} 倍")

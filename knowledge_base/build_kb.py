@@ -104,12 +104,15 @@ def build_route_timing(df):
 
 def build_seller_risk(df):
     """② seller_risk.csv — 按类目卖家级（基线来自已送达订单）"""
-    # 类目退货词基线
-    cat_return = df.groupby("category_en")["has_return_kw"].mean().rename("cat_avg_return_kw")
+    # 只取有评论的订单（分母 = n_reviews，不是总订单数）
+    reviewed = df[df["review_score"].notna()].copy()
 
-    grp = df.groupby(["seller_id", "seller_city", "seller_state", "category_en"])
+    # 类目退货词基线（仅基于有评论的订单）
+    cat_return = reviewed.groupby("category_en")["has_return_kw"].mean().rename("cat_avg_return_kw")
+
+    grp = reviewed.groupby(["seller_id", "seller_city", "seller_state", "category_en"])
     result = grp.agg(
-        n_reviews=("review_score", lambda x: x.notna().sum()),
+        n_reviews=("review_score", "count"),
         neg_rate=("is_neg", "mean"),
         return_kw_rate=("has_return_kw", "mean"),
     ).reset_index()
