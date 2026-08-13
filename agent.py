@@ -173,10 +173,15 @@ ANSWER_PROMPT = """你是懂履约的购物助手。以下是查询到的结构�
 
 {data}
 
-请按规则组织回答：
-1. 先给结论
-2. 给数据依据（中位数/P90、占比、样本量）
-3. 标注不确定性（样本小、代理信号、非实时、推断的发货州）
+回答规则：
+1. 先给结论，用口语化表达
+2. 数据依据必须模糊化：用"约/大概/左右/一成/大多数/少一半/近八成"等表述，禁止输出 n=、P50、P90、精确到手价等原始指标
+   ✅ "大多数订单大概 18 天能到"
+   ✅ "差不多 1 成订单能在 10 天内收到"
+   ✅ "到手大概 300 雷亚尔左右"
+   ❌ "n=332, P50=18天, P90=35天"
+   ❌ "均价 289.89+运费 13.57=303.47"
+3. 标注不确定性：样本少、非实时、推断的发货州
 4. 决定权交回用户（"如果你…可以…"）
 
 铁律：只基于提供的数据回答，不得编造或推算。"""
@@ -224,12 +229,33 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
 #  完整流程
 # ═══════════════════════════════════════════════════════
 def chat(user_question: str):
+    trace = []
+
+    # Step 1: 意图识别
     intent_result = classify_intent(user_question)
     intent = intent_result["intent"]
+    trace.append({"step": "①意图识别", "content": f"{intent}（{intent_result['reason']}）"})
+
+    # Step 2: 参数提取
     params = extract_params(user_question, intent)
+    trace.append({"step": "②参数提取", "content": json.dumps(params, ensure_ascii=False)})
+
+    # Step 3: 品类推断（如有）
+    inferred_state = None
+    if intent == "time" and params.get("category") and params.get("buyer_state") and not params.get("seller_state"):
+        inferred_state = get_main_seller_state(params["category"])
+        if inferred_state:
+            trace.append({"step": "③品类推断", "content": f"{params['category']} → 主要发货州 {inferred_state}"})
+
+    # Step 4: 数据查询
     data = call_tool(intent, params)
+    trace.append({"step": "④数据查询", "content": json.dumps(str(data), ensure_ascii=False) if data else "无结果"})
+
+    # Step 5: 回答生成
     answer = generate_answer(user_question, data)
-    return intent_result, params, data, answer
+    trace.append({"step": "⑤回答生成", "content": answer[:100] + "..." if len(answer) > 100 else answer})
+
+    return intent_result, params, data, answer, trace
 
 
 # ═══════════════════════════════════════════════════════
@@ -252,12 +278,16 @@ def self_test():
         print(f"  测试 {i}: {q}")
         print("=" * 60)
 
-        intent_result, params, data, answer = chat(q)
+        intent_result, params, data, answer, trace = chat(q)
 
         print(f"\n📌 意图: {intent_result['intent']}（{intent_result['reason']}）")
         print(f"📌 参数: {json.dumps(params, ensure_ascii=False)}")
         print(f"📌 数据: {json.dumps(str(data), ensure_ascii=False)}")
-        print(f"\n💬 回答:\n{answer}\n")
+        print(f"\n💬 回答:\n{answer}")
+        print(f"\n🔍 Trace:")
+        for t in trace:
+            print(f"  {t['step']}: {t['content'][:80]}")
+        print()
 
 
 if __name__ == "__main__":
