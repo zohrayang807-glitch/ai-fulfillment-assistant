@@ -67,14 +67,21 @@ INTENT_PROMPT = """你是一个意图分类器。判断用户问题属于哪类�
 - out_of_scope：与购物完全无关（天气、股票、闲聊、问时间）
 
 输入用户问题，只输出 JSON：
-{"intent": "time|risk|cost|capability|unsupported|out_of_scope", "reason": "简短理由"}"""
+{{"intent": "time|risk|cost|capability|unsupported|out_of_scope", "reason": "简短理由"}}
+
+{history_block}"""
 
 
-def classify_intent(user_question: str) -> dict:
+def classify_intent(user_question: str, history=None) -> dict:
+    history_block = ""
+    if history:
+        history_block = "以下是本次会话最近几轮的对话历史，用于理解用户的追问和省略：\n" + "\n".join(history)
+
+    prompt = INTENT_PROMPT.format(history_block=history_block)
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
-            {"role": "system", "content": INTENT_PROMPT},
+            {"role": "system", "content": prompt},
             {"role": "user", "content": user_question},
         ],
         temperature=0,
@@ -91,21 +98,29 @@ def classify_intent(user_question: str) -> dict:
 # ═══════════════════════════════════════════════════════
 EXTRACT_PROMPT = """从用户问题中提取查询参数，只输出 JSON，字段缺失填 null：
 
-{
+{{
   "category": "商品品类英文名（尽量映射到 Olist 品类，如 书→books_general_interest, 音响→audio, 办公椅/办公家具→office_furniture, 手表→watches_gifts, 咖啡→food_drink, 鞋→fashion_shoes, 床上用品→bed_bath_table, 电子产品→electronics, 运动→sports_leisure）",
   "buyer_state": "收货州（巴西2字母大写，如 SP/RN/MG/RJ/PE）",
   "seller_ids": ["卖家ID前缀列表（用户提到的所有卖家都填进去，没有则填空数组 []）"],
   "seller_state": "卖家发货州（用户明确提到时才填，否则 null）"
-}
+}}
 
-seller_ids 是数组，用户提到几个就填几个。例如提到两个卖家就填 ["aaa","bbb"]。"""
+seller_ids 是数组，用户提到几个就填几个。例如提到两个卖家就填 ["aaa","bbb"]。
+如果用户用了"那""换个""换回"等追问词，请根据对话历史补全省略的参数。
+
+{history_block}"""
 
 
-def extract_params(user_question: str, intent: str) -> dict:
+def extract_params(user_question: str, intent: str, history=None) -> dict:
+    history_block = ""
+    if history:
+        history_block = "以下是本次会话最近几轮的对话历史，用于理解用户的追问和省略：\n" + "\n".join(history)
+
+    prompt = EXTRACT_PROMPT.format(history_block=history_block)
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
-            {"role": "system", "content": EXTRACT_PROMPT},
+            {"role": "system", "content": prompt},
             {"role": "user", "content": f"意图：{intent}\n用户问题：{user_question}"},
         ],
         temperature=0,
@@ -265,16 +280,16 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
 # ═══════════════════════════════════════════════════════
 #  完整流程
 # ═══════════════════════════════════════════════════════
-def chat(user_question: str):
+def chat(user_question: str, history=None):
     trace = []
 
     # Step 1: 意图识别
-    intent_result = classify_intent(user_question)
+    intent_result = classify_intent(user_question, history)
     intent = intent_result["intent"]
     trace.append({"step": "①意图识别", "content": f"{intent}（{intent_result['reason']}）"})
 
     # Step 2: 参数提取
-    params = extract_params(user_question, intent)
+    params = extract_params(user_question, intent, history)
     trace.append({"step": "②参数提取", "content": json.dumps(params, ensure_ascii=False)})
 
     # Step 2.5: 州名校验
@@ -307,15 +322,19 @@ def chat(user_question: str):
 # ═══════════════════════════════════════════════════════
 def self_test():
     questions = [
-        "你能帮我做什么？",
+        "买书架送到 SP 要多久？",
+        "那换咖啡呢？",
+        "咖啡退货靠谱吗？",
+        "那换回书架，送到 RJ 呢？",
     ]
 
+    history = []
     for i, q in enumerate(questions, 1):
         print("=" * 60)
         print(f"  测试 {i}: {q}")
         print("=" * 60)
 
-        intent_result, params, data, answer, trace = chat(q)
+        intent_result, params, data, answer, trace = chat(q, history or None)
 
         print(f"\n📌 意图: {intent_result['intent']}（{intent_result['reason']}）")
         print(f"📌 参数: {json.dumps(params, ensure_ascii=False)}")
@@ -325,6 +344,11 @@ def self_test():
         for t in trace:
             print(f"  {t['step']}: {t['content'][:80]}")
         print()
+
+        # 更新历史（滑动窗口 5 轮）
+        history.append(f"用户：{q}")
+        history.append(f"AI：{answer}")
+        history = history[-10:]  # 5轮 × 2条 = 10条
 
 
 if __name__ == "__main__":

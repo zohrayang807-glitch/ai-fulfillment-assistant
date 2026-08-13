@@ -129,9 +129,15 @@ with st.form("ask_form", clear_on_submit=True):
         submitted = st.form_submit_button("发送 🚀", use_container_width=True)
 
 if submitted and user_input.strip():
+    # 构建历史（最近 5 轮 = 10 条）
+    history = []
+    for rnd in st.session_state.rounds[-5:]:
+        history.append(f"用户：{rnd['question']}")
+        history.append(f"AI：{rnd['answer']}")
+
     with st.spinner("🤔 思考中..."):
         time.sleep(0.5)
-        intent_result, params, data, answer, trace = chat(user_input.strip())
+        intent_result, params, data, answer, trace = chat(user_input.strip(), history or None)
 
     st.session_state.rounds.append({
         "question": user_input.strip(),
