@@ -62,11 +62,12 @@ INTENT_PROMPT = """你是一个意图分类器。判断用户问题属于哪类�
 - time：配送时效相关（能不能按时到、多久到）
 - risk：卖家靠谱度相关（退货方不方便、售后保障、差评）
 - cost：价格对比相关（哪个更值、到手价、运费）
+- capability：用户问你是谁、能做什么、有哪些功能（"你能帮我做什么""你是谁""有什么功能"）
 - unsupported：购物/履约相关但未实现的功能（砍价、查物流轨迹、催发货、退货售后流程、改地址）
 - out_of_scope：与购物完全无关（天气、股票、闲聊、问时间）
 
 输入用户问题，只输出 JSON：
-{"intent": "time|risk|cost|unsupported|out_of_scope", "reason": "简短理由"}"""
+{"intent": "time|risk|cost|capability|unsupported|out_of_scope", "reason": "简短理由"}"""
 
 
 def classify_intent(user_question: str) -> dict:
@@ -118,7 +119,7 @@ def extract_params(user_question: str, intent: str) -> dict:
 
 def call_tool(intent: str, params: dict) -> Optional[dict]:
     """根据意图调用知识库查询，支持品类→主要发货州的自动推断"""
-    if intent in ("unsupported", "out_of_scope"):
+    if intent in ("capability", "unsupported", "out_of_scope"):
         return {"special_intent": intent}
 
     if intent == "time":
@@ -205,6 +206,13 @@ ANSWER_PROMPT = """你是懂履约的购物助手。以下是查询到的结构�
 
 
 _SPECIAL_ANSWERS = {
+    "capability": (
+        "我可以帮你做三件事，都是网购下单前的决策：\n\n"
+        "1️⃣ **判断时效**——某件商品送到你那里大概要多久、能不能赶上你的时间；\n"
+        "2️⃣ **识别卖家风险**——这家店退货靠不靠谱、差评率高不高；\n"
+        "3️⃣ **对比价格**——两家店哪个更划算、到手价差多少。\n\n"
+        "你可以直接问我，比如『买书架送到 SP 要多久』『卖家 xxx 靠谱吗』『这两家哪个值』。"
+    ),
     "unsupported": "这个功能我暂时还没做（我目前主要帮你判断配送时效、退货风险、价格）。不过我可以帮你看看这类商品的时效或价格，需要吗？",
     "out_of_scope": "我主要帮你做网购决策，这个问题我帮不上，建议你用专门的天气/资讯工具。",
 }
@@ -299,8 +307,7 @@ def chat(user_question: str):
 # ═══════════════════════════════════════════════════════
 def self_test():
     questions = [
-        "从 SP 买咖啡送到 MJ 要多久？",
-        "买书架送到 MG 要多久？",
+        "你能帮我做什么？",
     ]
 
     for i, q in enumerate(questions, 1):
