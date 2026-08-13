@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-懂履约的 AI 购物助手 — 命令行原型
+懂履约的 AI 购物助手 — 命令行原型（通用版）
 三步流程：意图识别 → 工具调用 → 回答生成
+支持任意品类 × 任意收货地 × 任意卖家
 """
 
-import sys, os
+import sys, os, json
 from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -23,6 +24,19 @@ client = OpenAI(
 sys.path.insert(0, str(Path(__file__).resolve().parent / "knowledge_base"))
 from query import query_timing, query_seller_risk, query_cost
 
+# ── 加载品类→主要发货州映射 ──
+import pandas as pd
+_KB = Path(__file__).resolve().parent / "knowledge_base"
+_cat_main_state = pd.read_csv(_KB / "category_main_state.csv")
+CAT_MAIN_STATE = dict(zip(_cat_main_state["category_en"], _cat_main_state["main_seller_state"]))
+
+
+def get_main_seller_state(category: str) -> Optional[str]:
+    """查品类的主要发货州，查不到返回 None"""
+    if category and category in CAT_MAIN_STATE:
+        return CAT_MAIN_STATE[category]
+    return None
+
 
 # ═══════════════════════════════════════════════════════
 #  Step 1 · 意图识别
@@ -37,7 +51,6 @@ INTENT_PROMPT = """你是一个意图分类器。用户在网购，请判断他�
 
 
 def classify_intent(user_question: str) -> dict:
-    """调 DeepSeek 识别意图，返回 {"intent": ..., "reason": ...}"""
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -47,42 +60,28 @@ def classify_intent(user_question: str) -> dict:
         temperature=0,
         max_tokens=200,
     )
-    import json
     text = resp.choices[0].message.content.strip()
-    # 兼容 markdown code block 包裹
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     return json.loads(text)
 
 
 # ═══════════════════════════════════════════════════════
-#  Step 2 · 工具调用（实体抽取 + 知识库查询）
+#  Step 2 · 参数提取 + 工具调用
 # ═══════════════════════════════════════════════════════
-EXTRACT_PROMPT = """从用户问题中提取查询参数，只输出 JSON：
+EXTRACT_PROMPT = """从用户问题中提取查询参数，只输出 JSON，字段缺失填 null：
 
-如果意图是 time：
-{"seller_state": "卖家州（2字母大写，如 SP/RJ/MG）", "buyer_state": "买家州（2字母大写，如 SP/RN/PE）"}
+{
+  "category": "商品品类英文名（尽量映射到 Olist 品类，如 书→books_general_interest, 音响→audio, 办公椅/办公家具→office_furniture, 手表→watches_gifts, 咖啡→food_drink, 鞋→fashion_shoes, 床上用品→bed_bath_table, 电子产品→electronics, 运动→sports_leisure）",
+  "buyer_state": "收货州（巴西2字母大写，如 SP/RN/MG/RJ/PE）",
+  "seller_id": "卖家ID前缀（用户明确提到时才填，否则 null）",
+  "seller_state": "卖家发货州（用户明确提到时才填，否则 null）"
+}
 
-如果意图是 risk：
-{"seller_id": "卖家ID前缀（10位hex）", "category": "商品类目英文名"}
-
-如果意图是 cost：
-{"seller_id": "卖家ID前缀（10位hex）", "category": "商品类目英文名", "buyer_state": "买家州（2字母大写）"}
-
-常见类目名映射（用户说中文时用英文查）：
-- 办公椅/办公家具 → office_furniture
-- 手表/礼品 → watches_gifts
-- 音响/音频 → audio
-- 床上用品 → bed_bath_table
-- 运动户外 → sports_leisure
-- 电子产品 → electronics
-- 家具 → furniture_decor
-
-提取不到的字段填 null。"""
+如果有多个卖家，seller_id 填第一个。"""
 
 
 def extract_params(user_question: str, intent: str) -> dict:
-    """调 DeepSeek 提取查询参数"""
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -92,7 +91,6 @@ def extract_params(user_question: str, intent: str) -> dict:
         temperature=0,
         max_tokens=300,
     )
-    import json
     text = resp.choices[0].message.content.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
@@ -100,13 +98,38 @@ def extract_params(user_question: str, intent: str) -> dict:
 
 
 def call_tool(intent: str, params: dict) -> Optional[dict]:
-    """根据意图调用对应的知识库查询函数"""
+    """根据意图调用知识库查询，支持品类→主要发货州的自动推断"""
     if intent == "time":
-        return query_timing(params.get("seller_state"), params.get("buyer_state"))
+        seller_state = params.get("seller_state")
+        buyer_state = params.get("buyer_state")
+        category = params.get("category")
+
+        # 有卖家州 → 直接查
+        if seller_state and buyer_state:
+            return query_timing(seller_state, buyer_state)
+
+        # 没有卖家州，有品类+买家州 → 先查品类主要发货州
+        if category and buyer_state:
+            main_state = get_main_seller_state(category)
+            if main_state:
+                result = query_timing(main_state, buyer_state)
+                if result:
+                    result["source"] = f"品类 {category} 主要发货州 {main_state}→{buyer_state}"
+                    result["inferred_seller_state"] = main_state
+                    return result
+
+        # 兜底：全卖家→买家州
+        if buyer_state:
+            return query_timing(None, buyer_state)
+
+        return None
+
     elif intent == "risk":
         return query_seller_risk(params.get("seller_id"), params.get("category"))
+
     elif intent == "cost":
         return query_cost(params.get("seller_id"), params.get("category"), params.get("buyer_state"))
+
     return None
 
 
@@ -120,18 +143,16 @@ ANSWER_PROMPT = """你是懂履约的购物助手。以下是查询到的结构�
 请按规则组织回答：
 1. 先给结论
 2. 给数据依据（中位数/P90、占比、样本量）
-3. 标注不确定性（样本小、代理信号、非实时）
+3. 标注不确定性（样本小、代理信号、非实时、推断的发货州）
 4. 决定权交回用户（"如果你…可以…"）
 
 铁律：只基于提供的数据回答，不得编造或推算。"""
 
 
 def generate_answer(user_question: str, data: Optional[dict]) -> str:
-    """把数据 + 用户问题喂给 DeepSeek，生成最终回答"""
     if data is None:
         return "抱歉，这个数据暂时查不到，建议你直接联系卖家确认。"
 
-    import json
     data_str = json.dumps(data, ensure_ascii=False, indent=2)
     prompt = ANSWER_PROMPT.format(data=data_str)
 
@@ -150,83 +171,38 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
 # ═══════════════════════════════════════════════════════
 #  完整流程
 # ═══════════════════════════════════════════════════════
-def chat(user_question: str) -> str:
-    """完整三步流程"""
-    # Step 1: 意图识别
+def chat(user_question: str):
     intent_result = classify_intent(user_question)
     intent = intent_result["intent"]
-
-    # Step 2: 实体抽取 + 工具调用
     params = extract_params(user_question, intent)
     data = call_tool(intent, params)
-
-    # Step 3: 回答生成
     answer = generate_answer(user_question, data)
     return intent_result, params, data, answer
 
 
 # ═══════════════════════════════════════════════════════
-#  自测
+#  自测（5 句通用问题，不硬编码）
 # ═══════════════════════════════════════════════════════
-def _run_one(label: str, question: str, intent_result, params, data, answer):
-    """打印单个测试用例的结果"""
-    print("=" * 60)
-    print(f"  {label}")
-    print("=" * 60)
-
-    print(f"\n📌 Step 1 · 意图识别")
-    print(f"   意图: {intent_result['intent']}")
-    print(f"   理由: {intent_result['reason']}")
-
-    print(f"\n📌 Step 2 · 工具调用")
-    print(f"   参数: {params}")
-    print(f"   数据: {data}")
-
-    print(f"\n📌 Step 3 · 回答生成")
-    print(f"   {answer}")
-    print()
-
-
 def self_test():
-    import json
+    questions = [
+        "我想买个书架，送到 SP，要多久？",
+        "买咖啡豆送到 MG 要几天？",
+        "这个卖家 a7f13822ce 的办公家具退货靠谱吗？",
+        "两个卖家 b33e7c5544 和 d650b663c3 的手表，在 SP 哪个划算？",
+        "买鞋送到 RJ 要多久？",
+    ]
 
-    # ── 故事 1 · time 意图 ──
-    q1 = "这个音响能10天内到吗？我在RN"
-    ir1, p1, d1, a1 = chat(q1)
-    _run_one("故事1（time）：音响能10天内到吗？我在RN", q1, ir1, p1, d1, a1)
+    for i, q in enumerate(questions, 1):
+        print("=" * 60)
+        print(f"  测试 {i}: {q}")
+        print("=" * 60)
 
-    # ── 故事 2 · risk 意图 ──
-    q2 = "卖家 a7f13822ce 的办公椅，退货靠不靠谱？"
-    ir2, p2, d2, a2 = chat(q2)
-    _run_one("故事2（risk）：a7f13822ce 办公椅退货靠不靠谱？", q2, ir2, p2, d2, a2)
+        intent_result, params, data, answer = chat(q)
 
-    # ── 故事 3 · cost 意图（两个卖家对比）──
-    q3 = "买家在SP，这两块表 b33e7c5544 和 d650b663c3 哪个更值得买？"
-    print("=" * 60)
-    print("  故事3（cost）：SP买家，b33e7c5544 vs d650b663c3 手表")
-    print("=" * 60)
-
-    # 意图识别（复用一次 LLM 调用）
-    ir3 = classify_intent(q3)
-    print(f"\n📌 Step 1 · 意图识别")
-    print(f"   意图: {ir3['intent']}")
-    print(f"   理由: {ir3['reason']}")
-
-    # 分别查两个卖家
-    d3a = query_cost("b33e7c5544", "watches_gifts", "SP")
-    d3b = query_cost("d650b663c3", "watches_gifts", "SP")
-    print(f"\n📌 Step 2 · 工具调用（×2）")
-    print(f"   b33e7c5544: {d3a}")
-    print(f"   d650b663c3: {d3b}")
-
-    # 把两家数据合并喂给 LLM
-    combined = {"b33e7c5544": d3a, "d650b663c3": d3b}
-    combined_str = json.dumps(combined, ensure_ascii=False, indent=2)
-    a3 = generate_answer(q3, combined)
-
-    print(f"\n📌 Step 3 · 回答生成")
-    print(f"   {a3}")
-    print()
+        print(f"\n📌 意图: {intent_result['intent']}（{intent_result['reason']}）")
+        print(f"📌 参数: {json.dumps(params, ensure_ascii=False)}")
+        print(f"📌 数据: {json.dumps(str(data), ensure_ascii=False)}")
+        print(f"\n💬 回答:\n{answer}\n")
 
 
 if __name__ == "__main__":
