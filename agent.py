@@ -74,11 +74,11 @@ EXTRACT_PROMPT = """从用户问题中提取查询参数，只输出 JSON，字�
 {
   "category": "商品品类英文名（尽量映射到 Olist 品类，如 书→books_general_interest, 音响→audio, 办公椅/办公家具→office_furniture, 手表→watches_gifts, 咖啡→food_drink, 鞋→fashion_shoes, 床上用品→bed_bath_table, 电子产品→electronics, 运动→sports_leisure）",
   "buyer_state": "收货州（巴西2字母大写，如 SP/RN/MG/RJ/PE）",
-  "seller_id": "卖家ID前缀（用户明确提到时才填，否则 null）",
+  "seller_ids": ["卖家ID前缀列表（用户提到的所有卖家都填进去，没有则填空数组 []）"],
   "seller_state": "卖家发货州（用户明确提到时才填，否则 null）"
 }
 
-如果有多个卖家，seller_id 填第一个。"""
+seller_ids 是数组，用户提到几个就填几个。例如提到两个卖家就填 ["aaa","bbb"]。"""
 
 
 def extract_params(user_question: str, intent: str) -> dict:
@@ -125,10 +125,31 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
         return None
 
     elif intent == "risk":
-        return query_seller_risk(params.get("seller_id"), params.get("category"))
+        seller_ids = params.get("seller_ids") or []
+        sid = seller_ids[0] if seller_ids else None
+        return query_seller_risk(sid, params.get("category"))
 
     elif intent == "cost":
-        return query_cost(params.get("seller_id"), params.get("category"), params.get("buyer_state"))
+        seller_ids = params.get("seller_ids") or []
+        category = params.get("category")
+        buyer_state = params.get("buyer_state")
+
+        # 多个卖家 → 分别查询，返回对比结果
+        if len(seller_ids) >= 2:
+            results = []
+            for sid in seller_ids:
+                r = query_cost(sid, category, buyer_state)
+                if r:
+                    results.append(r)
+            if results:
+                return {"compare": True, "sellers": results}
+
+        # 单个卖家
+        if len(seller_ids) == 1:
+            return query_cost(seller_ids[0], category, buyer_state)
+
+        # 没提卖家
+        return query_cost(None, category, buyer_state)
 
     return None
 
