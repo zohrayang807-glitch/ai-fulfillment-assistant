@@ -38,6 +38,23 @@ def get_main_seller_state(category: str) -> Optional[str]:
     return None
 
 
+# ── 巴西 27 个州 ──
+VALID_STATES = {
+    "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA",
+    "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN",
+    "RS", "RO", "RR", "SC", "SP", "SE", "TO",
+}
+
+
+def validate_states(params: dict) -> Optional[str]:
+    """校验 buyer_state / seller_state 是否合法，返回无效州缩写或 None"""
+    for key in ("buyer_state", "seller_state"):
+        val = params.get(key)
+        if val and val.upper() not in VALID_STATES:
+            return val
+    return None
+
+
 # ═══════════════════════════════════════════════════════
 #  Step 1 · 意图识别
 # ═══════════════════════════════════════════════════════
@@ -198,6 +215,14 @@ _NEED_INFO_QUESTIONS = {
 }
 
 
+def _invalid_state_msg(code: str) -> str:
+    return (
+        f"「{code}」不是有效的巴西州缩写。巴西的州缩写是 2 位大写字母，"
+        f"比如 SP（圣保罗）、MG（米纳斯吉拉斯）、RJ（里约）等。"
+        f"你是不是想写 MG 或 MS？告诉我正确的州名，我帮你查。"
+    )
+
+
 def generate_answer(user_question: str, data: Optional[dict]) -> str:
     # 特殊意图直接返回固定话术
     if data and "special_intent" in data:
@@ -206,6 +231,10 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
     # 缺参数 → 反问
     if data and "need_info" in data:
         return _NEED_INFO_QUESTIONS.get(data["need_info"], "请补充信息。")
+
+    # 无效州
+    if data and "invalid_state" in data:
+        return _invalid_state_msg(data["invalid_state"])
 
     if data is None:
         return "抱歉，这个数据暂时查不到，建议你直接联系卖家确认。"
@@ -240,8 +269,15 @@ def chat(user_question: str):
     params = extract_params(user_question, intent)
     trace.append({"step": "②参数提取", "content": json.dumps(params, ensure_ascii=False)})
 
+    # Step 2.5: 州名校验
+    bad_state = validate_states(params) if intent in ("time", "cost") else None
+    if bad_state:
+        trace.append({"step": "②.5州名校验", "content": f"❌ {bad_state} 不是合法巴西州"})
+        answer = _invalid_state_msg(bad_state)
+        trace.append({"step": "⑤回答生成", "content": answer[:100]})
+        return intent_result, params, {"invalid_state": bad_state}, answer, trace
+
     # Step 3: 品类推断（如有）
-    inferred_state = None
     if intent == "time" and params.get("category") and params.get("buyer_state") and not params.get("seller_state"):
         inferred_state = get_main_seller_state(params["category"])
         if inferred_state:
@@ -263,14 +299,8 @@ def chat(user_question: str):
 # ═══════════════════════════════════════════════════════
 def self_test():
     questions = [
-        "b33 和 d650 两块表在 SP 哪个划算？",
-        "这两个卖家（b33、d650）哪个更值？",
-        "帮我砍价",
-        "我的包裹到哪了？",
-        "今天天气怎么样？",
-        "卖家 f8db351d 靠谱吗？",
-        "买书架送到 SP 要多久？",
-        "随便编个卖家 abc123 靠谱吗？",
+        "从 SP 买咖啡送到 MJ 要多久？",
+        "买书架送到 MG 要多久？",
     ]
 
     for i, q in enumerate(questions, 1):
