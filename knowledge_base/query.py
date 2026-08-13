@@ -82,6 +82,23 @@ def query_timing(seller_state, buyer_state):
     return None
 
 
+def _unique_seller(df, seller_id):
+    """前缀匹配后做唯一性检查。返回 (mask, error_msg)。"""
+    if len(seller_id) < 40:
+        mask = df["seller_id"].str.startswith(seller_id)
+        matched = df.loc[mask, "seller_id"].unique()
+        if len(matched) == 0:
+            return mask, "no_match"
+        if len(matched) > 1:
+            return mask, f"卖家前缀 {seller_id} 不唯一，匹配到 {len(matched)} 个卖家，请提供更长的 ID。"
+        return mask, None
+    else:
+        mask = df["seller_id"] == seller_id
+        if mask.sum() == 0:
+            return mask, "no_match"
+        return mask, None
+
+
 def query_seller_risk(seller_id, category=None):
     """
     查询卖家退货/差评风险信号。
@@ -95,11 +112,11 @@ def query_seller_risk(seller_id, category=None):
     """
     df = _load_seller_risk()
 
-    # 卖家过滤（支持前缀）
-    if len(seller_id) < 40:
-        seller_mask = df["seller_id"].str.startswith(seller_id)
-    else:
-        seller_mask = df["seller_id"] == seller_id
+    seller_mask, err = _unique_seller(df, seller_id)
+    if err == "no_match":
+        return None
+    if err:
+        return {"error": err}
 
     # ── 有品类：精确匹配 seller × category ──
     if category:
@@ -169,11 +186,13 @@ def query_cost(seller_id, category, buyer_state):
     """
     df = _load_seller_cost()
 
-    # 精确匹配（支持前缀：10位hex → 匹配所有以此开头的卖家）
-    if len(seller_id) < 40:
-        seller_mask = df["seller_id"].str.startswith(seller_id)
-    else:
-        seller_mask = df["seller_id"] == seller_id
+    # 精确匹配（支持前缀，含唯一性检查）
+    seller_mask, err = _unique_seller(df, seller_id)
+    if err == "no_match":
+        return None
+    if err:
+        return {"error": err}
+
     mask = seller_mask & (df["category_en"] == category) & (df["customer_state"] == buyer_state)
     row = df[mask]
     if len(row) > 0 and row["n"].iloc[0] > 0:

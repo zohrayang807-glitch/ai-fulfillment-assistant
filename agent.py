@@ -41,13 +41,15 @@ def get_main_seller_state(category: str) -> Optional[str]:
 # ═══════════════════════════════════════════════════════
 #  Step 1 · 意图识别
 # ═══════════════════════════════════════════════════════
-INTENT_PROMPT = """你是一个意图分类器。用户在网购，请判断他关心哪个决策维度：
-- time：能不能按时到、多久到、配送时效
-- risk：这家店靠不靠谱、退货方不方便、售后保障
-- cost：哪个更值、到手价、运费、价格对比
+INTENT_PROMPT = """你是一个意图分类器。判断用户问题属于哪类：
+- time：配送时效相关（能不能按时到、多久到）
+- risk：卖家靠谱度相关（退货方不方便、售后保障、差评）
+- cost：价格对比相关（哪个更值、到手价、运费）
+- unsupported：购物/履约相关但未实现的功能（砍价、查物流轨迹、催发货、退货售后流程、改地址）
+- out_of_scope：与购物完全无关（天气、股票、闲聊、问时间）
 
 输入用户问题，只输出 JSON：
-{"intent": "time|risk|cost", "reason": "简短理由"}"""
+{"intent": "time|risk|cost|unsupported|out_of_scope", "reason": "简短理由"}"""
 
 
 def classify_intent(user_question: str) -> dict:
@@ -99,10 +101,17 @@ def extract_params(user_question: str, intent: str) -> dict:
 
 def call_tool(intent: str, params: dict) -> Optional[dict]:
     """根据意图调用知识库查询，支持品类→主要发货州的自动推断"""
+    if intent in ("unsupported", "out_of_scope"):
+        return {"special_intent": intent}
+
     if intent == "time":
         seller_state = params.get("seller_state")
         buyer_state = params.get("buyer_state")
         category = params.get("category")
+
+        # 缺收货地 → 反问
+        if not buyer_state:
+            return {"need_info": "buyer_state"}
 
         # 有卖家州 → 直接查
         if seller_state and buyer_state:
@@ -119,20 +128,26 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
                     return result
 
         # 兜底：全卖家→买家州
-        if buyer_state:
-            return query_timing(None, buyer_state)
-
-        return None
+        return query_timing(None, buyer_state)
 
     elif intent == "risk":
         seller_ids = params.get("seller_ids") or []
-        sid = seller_ids[0] if seller_ids else None
-        return query_seller_risk(sid, params.get("category"))
+        if not seller_ids:
+            return {"need_info": "seller_ids"}
+        return query_seller_risk(seller_ids[0], params.get("category"))
 
     elif intent == "cost":
         seller_ids = params.get("seller_ids") or []
         category = params.get("category")
         buyer_state = params.get("buyer_state")
+
+        # 缺收货地 → 反问
+        if not buyer_state:
+            return {"need_info": "buyer_state"}
+
+        # 缺卖家 → 反问
+        if not seller_ids:
+            return {"need_info": "seller_ids"}
 
         # 多个卖家 → 分别查询，返回对比结果
         if len(seller_ids) >= 2:
@@ -143,13 +158,10 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
                     results.append(r)
             if results:
                 return {"compare": True, "sellers": results}
+            return None
 
         # 单个卖家
-        if len(seller_ids) == 1:
-            return query_cost(seller_ids[0], category, buyer_state)
-
-        # 没提卖家
-        return query_cost(None, category, buyer_state)
+        return query_cost(seller_ids[0], category, buyer_state)
 
     return None
 
@@ -170,7 +182,26 @@ ANSWER_PROMPT = """你是懂履约的购物助手。以下是查询到的结构�
 铁律：只基于提供的数据回答，不得编造或推算。"""
 
 
+_SPECIAL_ANSWERS = {
+    "unsupported": "这个功能我暂时还没做（我目前主要帮你判断配送时效、退货风险、价格）。不过我可以帮你看看这类商品的时效或价格，需要吗？",
+    "out_of_scope": "我主要帮你做网购决策，这个问题我帮不上，建议你用专门的天气/资讯工具。",
+}
+
+_NEED_INFO_QUESTIONS = {
+    "buyer_state": "我需要知道你的收货地（比如你在哪个州），才能帮你查。",
+    "seller_ids": "你想查哪家卖家？请提供卖家 ID 或名称。",
+}
+
+
 def generate_answer(user_question: str, data: Optional[dict]) -> str:
+    # 特殊意图直接返回固定话术
+    if data and "special_intent" in data:
+        return _SPECIAL_ANSWERS.get(data["special_intent"], "暂不支持。")
+
+    # 缺参数 → 反问
+    if data and "need_info" in data:
+        return _NEED_INFO_QUESTIONS.get(data["need_info"], "请补充信息。")
+
     if data is None:
         return "抱歉，这个数据暂时查不到，建议你直接联系卖家确认。"
 
@@ -206,11 +237,14 @@ def chat(user_question: str):
 # ═══════════════════════════════════════════════════════
 def self_test():
     questions = [
-        "我想买个书架，送到 SP，要多久？",
-        "买咖啡豆送到 MG 要几天？",
-        "这个卖家 a7f13822ce 的办公家具退货靠谱吗？",
-        "两个卖家 b33e7c5544 和 d650b663c3 的手表，在 SP 哪个划算？",
-        "买鞋送到 RJ 要多久？",
+        "b33 和 d650 两块表在 SP 哪个划算？",
+        "这两个卖家（b33、d650）哪个更值？",
+        "帮我砍价",
+        "我的包裹到哪了？",
+        "今天天气怎么样？",
+        "卖家 f8db351d 靠谱吗？",
+        "买书架送到 SP 要多久？",
+        "随便编个卖家 abc123 靠谱吗？",
     ]
 
     for i, q in enumerate(questions, 1):
