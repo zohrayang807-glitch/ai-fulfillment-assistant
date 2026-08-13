@@ -82,53 +82,77 @@ def query_timing(seller_state, buyer_state):
     return None
 
 
-def query_seller_risk(seller_id, category):
+def query_seller_risk(seller_id, category=None):
     """
     查询卖家退货/差评风险信号。
 
     返回 dict: {n_reviews, neg_rate, return_kw_rate, cat_avg_return_kw}
     查不到返回 None。
 
-    回退逻辑：
-    1. 精确匹配：seller_id × category
-    2. 回退：同 category 的全卖家平均（cat_avg_return_kw 仍来自 category_baseline）
+    两种粒度：
+    1. 有 category → 查该卖家在该品类的表现
+    2. 无 category → 查该卖家所有品类聚合的表现
     """
     df = _load_seller_risk()
 
-    # 精确匹配（支持前缀）
+    # 卖家过滤（支持前缀）
     if len(seller_id) < 40:
         seller_mask = df["seller_id"].str.startswith(seller_id)
     else:
         seller_mask = df["seller_id"] == seller_id
-    mask = seller_mask & (df["category_en"] == category)
-    row = df[mask]
-    if len(row) > 0 and row["n_reviews"].iloc[0] > 0:
-        r = row.iloc[0]
-        return {
-            "n_reviews": int(r["n_reviews"]),
-            "neg_rate": r["neg_rate"],
-            "return_kw_rate": r["return_kw_rate"],
-            "cat_avg_return_kw": r["cat_avg_return_kw"],
-            "source": f"seller {seller_id[:10]}.. / {category}",
-        }
 
-    # 回退：同 category 全卖家平均
-    fallback = df[df["category_en"] == category]
-    if len(fallback) > 0:
-        n_reviews = fallback["n_reviews"].sum()
-        if n_reviews > 0:
-            weighted_neg = (fallback["neg_rate"] * fallback["n_reviews"]).sum() / n_reviews
-            weighted_kw = (fallback["return_kw_rate"] * fallback["n_reviews"]).sum() / n_reviews
-            cat_avg = fallback["cat_avg_return_kw"].mean()
+    # ── 有品类：精确匹配 seller × category ──
+    if category:
+        mask = seller_mask & (df["category_en"] == category)
+        row = df[mask]
+        if len(row) > 0 and row["n_reviews"].iloc[0] > 0:
+            r = row.iloc[0]
             return {
-                "n_reviews": int(n_reviews),
-                "neg_rate": round(weighted_neg, 2),
-                "return_kw_rate": round(weighted_kw, 2),
-                "cat_avg_return_kw": round(cat_avg, 2),
-                "source": f"all sellers / {category} (fallback)",
+                "n_reviews": int(r["n_reviews"]),
+                "neg_rate": r["neg_rate"],
+                "return_kw_rate": r["return_kw_rate"],
+                "cat_avg_return_kw": r["cat_avg_return_kw"],
+                "source": f"seller {seller_id[:10]}.. / {category}",
             }
+        # 回退：同 category 全卖家平均
+        fallback = df[df["category_en"] == category]
+        if len(fallback) > 0:
+            n_reviews = fallback["n_reviews"].sum()
+            if n_reviews > 0:
+                weighted_neg = (fallback["neg_rate"] * fallback["n_reviews"]).sum() / n_reviews
+                weighted_kw = (fallback["return_kw_rate"] * fallback["n_reviews"]).sum() / n_reviews
+                cat_avg = fallback["cat_avg_return_kw"].mean()
+                return {
+                    "n_reviews": int(n_reviews),
+                    "neg_rate": round(weighted_neg, 2),
+                    "return_kw_rate": round(weighted_kw, 2),
+                    "cat_avg_return_kw": round(cat_avg, 2),
+                    "source": f"all sellers / {category} (fallback)",
+                }
+        return None
 
-    return None
+    # ── 无品类：聚合该卖家所有品类 ──
+    seller_rows = df[seller_mask]
+    if len(seller_rows) == 0:
+        return None
+
+    n_reviews = seller_rows["n_reviews"].sum()
+    if n_reviews == 0:
+        return None
+
+    weighted_neg = (seller_rows["neg_rate"] * seller_rows["n_reviews"]).sum() / n_reviews
+    weighted_kw = (seller_rows["return_kw_rate"] * seller_rows["n_reviews"]).sum() / n_reviews
+    cat_avg = seller_rows["cat_avg_return_kw"].mean()
+    cats = seller_rows["category_en"].nunique()
+
+    return {
+        "n_reviews": int(n_reviews),
+        "neg_rate": round(weighted_neg, 2),
+        "return_kw_rate": round(weighted_kw, 2),
+        "cat_avg_return_kw": round(cat_avg, 2),
+        "n_categories": cats,
+        "source": f"seller {seller_id[:10]}.. / all {cats} categories (aggregated)",
+    }
 
 
 def query_cost(seller_id, category, buyer_state):
