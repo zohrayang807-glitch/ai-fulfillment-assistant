@@ -95,8 +95,12 @@ def query_seller_risk(seller_id, category):
     """
     df = _load_seller_risk()
 
-    # 精确匹配
-    mask = (df["seller_id"] == seller_id) & (df["category_en"] == category)
+    # 精确匹配（支持前缀）
+    if len(seller_id) < 40:
+        seller_mask = df["seller_id"].str.startswith(seller_id)
+    else:
+        seller_mask = df["seller_id"] == seller_id
+    mask = seller_mask & (df["category_en"] == category)
     row = df[mask]
     if len(row) > 0 and row["n_reviews"].iloc[0] > 0:
         r = row.iloc[0]
@@ -141,12 +145,12 @@ def query_cost(seller_id, category, buyer_state):
     """
     df = _load_seller_cost()
 
-    # 精确匹配
-    mask = (
-        (df["seller_id"] == seller_id)
-        & (df["category_en"] == category)
-        & (df["customer_state"] == buyer_state)
-    )
+    # 精确匹配（支持前缀：10位hex → 匹配所有以此开头的卖家）
+    if len(seller_id) < 40:
+        seller_mask = df["seller_id"].str.startswith(seller_id)
+    else:
+        seller_mask = df["seller_id"] == seller_id
+    mask = seller_mask & (df["category_en"] == category) & (df["customer_state"] == buyer_state)
     row = df[mask]
     if len(row) > 0 and row["n"].iloc[0] > 0:
         r = row.iloc[0]
@@ -161,7 +165,7 @@ def query_cost(seller_id, category, buyer_state):
         }
 
     # 回退 1：seller × category（全买家州）
-    mask2 = (df["seller_id"] == seller_id) & (df["category_en"] == category)
+    mask2 = seller_mask & (df["category_en"] == category)
     row2 = df[mask2]
     if len(row2) > 0 and row2["n"].sum() > 0:
         n_total = row2["n"].sum()

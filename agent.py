@@ -61,13 +61,22 @@ def classify_intent(user_question: str) -> dict:
 EXTRACT_PROMPT = """从用户问题中提取查询参数，只输出 JSON：
 
 如果意图是 time：
-{"seller_state": "卖家州（2字母大写）", "buyer_state": "买家州（2字母大写）"}
+{"seller_state": "卖家州（2字母大写，如 SP/RJ/MG）", "buyer_state": "买家州（2字母大写，如 SP/RN/PE）"}
 
 如果意图是 risk：
-{"seller_id": "卖家ID前缀", "category": "商品类目英文名"}
+{"seller_id": "卖家ID前缀（10位hex）", "category": "商品类目英文名"}
 
 如果意图是 cost：
-{"seller_id": "卖家ID前缀", "category": "商品类目英文名", "buyer_state": "买家州"}
+{"seller_id": "卖家ID前缀（10位hex）", "category": "商品类目英文名", "buyer_state": "买家州（2字母大写）"}
+
+常见类目名映射（用户说中文时用英文查）：
+- 办公椅/办公家具 → office_furniture
+- 手表/礼品 → watches_gifts
+- 音响/音频 → audio
+- 床上用品 → bed_bath_table
+- 运动户外 → sports_leisure
+- 电子产品 → electronics
+- 家具 → furniture_decor
 
 提取不到的字段填 null。"""
 
@@ -159,13 +168,11 @@ def chat(user_question: str) -> str:
 # ═══════════════════════════════════════════════════════
 #  自测
 # ═══════════════════════════════════════════════════════
-def self_test():
+def _run_one(label: str, question: str, intent_result, params, data, answer):
+    """打印单个测试用例的结果"""
     print("=" * 60)
-    print("  self_test: 这个音响能10天内到吗？我在RN")
+    print(f"  {label}")
     print("=" * 60)
-
-    question = "这个音响能10天内到吗？我在RN"
-    intent_result, params, data, answer = chat(question)
 
     print(f"\n📌 Step 1 · 意图识别")
     print(f"   意图: {intent_result['intent']}")
@@ -177,6 +184,48 @@ def self_test():
 
     print(f"\n📌 Step 3 · 回答生成")
     print(f"   {answer}")
+    print()
+
+
+def self_test():
+    import json
+
+    # ── 故事 1 · time 意图 ──
+    q1 = "这个音响能10天内到吗？我在RN"
+    ir1, p1, d1, a1 = chat(q1)
+    _run_one("故事1（time）：音响能10天内到吗？我在RN", q1, ir1, p1, d1, a1)
+
+    # ── 故事 2 · risk 意图 ──
+    q2 = "卖家 a7f13822ce 的办公椅，退货靠不靠谱？"
+    ir2, p2, d2, a2 = chat(q2)
+    _run_one("故事2（risk）：a7f13822ce 办公椅退货靠不靠谱？", q2, ir2, p2, d2, a2)
+
+    # ── 故事 3 · cost 意图（两个卖家对比）──
+    q3 = "买家在SP，这两块表 b33e7c5544 和 d650b663c3 哪个更值得买？"
+    print("=" * 60)
+    print("  故事3（cost）：SP买家，b33e7c5544 vs d650b663c3 手表")
+    print("=" * 60)
+
+    # 意图识别（复用一次 LLM 调用）
+    ir3 = classify_intent(q3)
+    print(f"\n📌 Step 1 · 意图识别")
+    print(f"   意图: {ir3['intent']}")
+    print(f"   理由: {ir3['reason']}")
+
+    # 分别查两个卖家
+    d3a = query_cost("b33e7c5544", "watches_gifts", "SP")
+    d3b = query_cost("d650b663c3", "watches_gifts", "SP")
+    print(f"\n📌 Step 2 · 工具调用（×2）")
+    print(f"   b33e7c5544: {d3a}")
+    print(f"   d650b663c3: {d3b}")
+
+    # 把两家数据合并喂给 LLM
+    combined = {"b33e7c5544": d3a, "d650b663c3": d3b}
+    combined_str = json.dumps(combined, ensure_ascii=False, indent=2)
+    a3 = generate_answer(q3, combined)
+
+    print(f"\n📌 Step 3 · 回答生成")
+    print(f"   {a3}")
     print()
 
 
