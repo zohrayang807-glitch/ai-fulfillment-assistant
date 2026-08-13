@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
 懂履约的 AI 购物助手 — Streamlit 双栏 Demo
-左栏：用户视角（对话 + 模糊化回答）
-右栏：面试官视角（trace 步骤流程图）
+每轮对话 = 一行，左列对话气泡 + 右列推理链路，自然对齐。
 """
 
 import streamlit as st
-import time, json
+import time
 
 from agent import chat
 
@@ -15,94 +14,84 @@ st.set_page_config(page_title="懂履约的 AI 购物助手", layout="wide")
 # ── 样式 ──
 st.markdown("""
 <style>
-/* 左右栏高度对齐 */
-[data-testid="column"] { min-height: 80vh; }
-/* trace 步骤样式 */
-.trace-step { padding: 8px 12px; margin: 4px 0; border-radius: 6px; font-size: 0.85rem; }
-.trace-step-1 { background: #e3f2fd; }
-.trace-step-2 { background: #e8f5e9; }
-.trace-step-3 { background: #fff3e0; }
-.trace-step-4 { background: #f3e5f5; }
-.trace-step-5 { background: #e0f7fa; }
+/* 气泡 */
+.chat-bubble-user {
+    background: #dcf8c6; padding: 10px 14px; border-radius: 12px 12px 2px 12px;
+    margin: 4px 0; font-size: 0.95rem;
+}
+.chat-bubble-assistant {
+    background: #f1f0f0; padding: 10px 14px; border-radius: 12px 12px 12px 2px;
+    margin: 4px 0; font-size: 0.95rem;
+}
+/* trace 步骤 */
+.trace-step { padding: 6px 10px; margin: 3px 0; border-radius: 6px; font-size: 0.82rem; }
+.trace-1 { background: #e3f2fd; }
+.trace-2 { background: #e8f5e9; }
+.trace-3 { background: #fff3e0; }
+.trace-4 { background: #f3e5f5; }
+.trace-5 { background: #e0f7fa; }
+/* 两列之间不留多余间距 */
+[data-testid="column"] { padding: 0 8px; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🛒 懂履约的 AI 购物助手")
 
-# ── 双栏 ──
-col_chat, col_trace = st.columns([3, 1])
+# ── 初始化 ──
+if "rounds" not in st.session_state:
+    st.session_state.rounds = []  # [{question, answer, trace}]
 
-# ── 初始化会话状态 ──
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "traces" not in st.session_state:
-    st.session_state.traces = []
+STEP_META = {
+    "①意图识别": ("trace-1", "🎯"),
+    "②参数提取": ("trace-2", "🔧"),
+    "③品类推断": ("trace-3", "🔗"),
+    "④数据查询": ("trace-4", "📊"),
+    "⑤回答生成": ("trace-5", "💬"),
+}
 
-# ────────────────────────────────────────
-#  左栏：用户对话
-# ────────────────────────────────────────
-with col_chat:
-    st.subheader("💬 对话")
+# ── 渲染历史轮次（每轮一行，左右对齐）──
+for idx, rnd in enumerate(st.session_state.rounds):
+    col_left, col_right = st.columns(2)
 
-    # 显示历史消息
-    for i, msg in enumerate(st.session_state.messages):
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    with col_left:
+        st.markdown(f'<div class="chat-bubble-user">🧑 {rnd["question"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="chat-bubble-assistant">🤖 {rnd["answer"]}</div>', unsafe_allow_html=True)
 
-    # 用户输入
-    if user_input := st.chat_input("输入你的问题，例如：买书架送到 SP 要多久？"):
-        # 显示用户消息
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        # 模拟思考
-        with st.chat_message("assistant"):
-            thinking = st.status("🤔 思考中...", expanded=False)
-            time.sleep(0.8)  # 模拟延迟
-
-            # 调用 agent
-            intent_result, params, data, answer, trace = chat(user_input)
-
-            thinking.update(label="✅ 思考完成", state="complete", expanded=False)
-            st.markdown(answer)
-
-        # 存储
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.session_state.traces.append(trace)
-
-# ────────────────────────────────────────
-#  右栏：面试官视角
-# ────────────────────────────────────────
-with col_trace:
-    st.subheader("🔍 面试官视角")
-
-    if not st.session_state.traces:
-        st.info("对话后这里会显示内部推理过程。")
-    else:
-        # 显示最新的 trace
-        latest = st.session_state.traces[-1]
-        st.caption(f"最近一轮的推理链路（共 {len(latest)} 步）")
-
-        step_styles = {
-            "①意图识别": ("trace-step-1", "🎯"),
-            "②参数提取": ("trace-step-2", "🔧"),
-            "③品类推断": ("trace-step-3", "🔗"),
-            "④数据查询": ("trace-step-4", "📊"),
-            "⑤回答生成": ("trace-step-5", "💬"),
-        }
-
-        for t in latest:
+    with col_right:
+        for t in rnd["trace"]:
             step = t["step"]
-            css_class, icon = step_styles.get(step, ("", "•"))
+            css, icon = STEP_META.get(step, ("", "•"))
             with st.expander(f"{icon} {step}", expanded=False):
                 st.code(t["content"], language=None)
 
-        # 历史轮次
-        if len(st.session_state.traces) > 1:
-            st.divider()
-            st.caption(f"历史共 {len(st.session_state.traces)} 轮")
-            for i, hist in enumerate(reversed(st.session_state.traces[:-1]), 1):
-                with st.expander(f"第 {len(st.session_state.traces) - i} 轮", expanded=False):
-                    for t in hist:
-                        st.text(f"{t['step']}: {t['content'][:60]}...")
+    st.divider()
+
+# ── 输入框 ──
+if user_input := st.chat_input("输入你的问题，例如：买书架送到 SP 要多久？"):
+    # 调用 agent
+    with st.status("🤔 思考中...", expanded=False):
+        time.sleep(0.6)
+        intent_result, params, data, answer, trace = chat(user_input)
+
+    # 存储本轮
+    st.session_state.rounds.append({
+        "question": user_input,
+        "answer": answer,
+        "trace": trace,
+    })
+
+    # 立即渲染本轮（左右对齐）
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown(f'<div class="chat-bubble-user">🧑 {user_input}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="chat-bubble-assistant">🤖 {answer}</div>', unsafe_allow_html=True)
+
+    with col_right:
+        for t in trace:
+            step = t["step"]
+            css, icon = STEP_META.get(step, ("", "•"))
+            with st.expander(f"{icon} {step}", expanded=False):
+                st.code(t["content"], language=None)
+
+    st.rerun()
