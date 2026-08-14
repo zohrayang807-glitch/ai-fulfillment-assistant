@@ -22,7 +22,7 @@ client = OpenAI(
 
 # ── 导入知识库查询 ──
 sys.path.insert(0, str(Path(__file__).resolve().parent / "knowledge_base"))
-from query import query_timing, query_seller_risk, query_cost
+from query import query_timing, query_promise, query_seller_risk, query_cost, query_recommend, query_seller_state, query_seller_categories, query_review_reason, query_value_score, query_freight_estimate, query_cost_baseline
 
 # ── 加载品类→主要发货州映射 ──
 import pandas as pd
@@ -64,6 +64,7 @@ INTENT_PROMPT = """你是一个意图分类器。将用户问题分到以下标�
 - time：配送时效。判据：问"多久到/几天/能不能按时到/会不会迟到"。典型："送到 RN 要多久？""来得及吗？"
 - risk：卖家靠谱度。判据：问"靠不靠谱/退货方便吗/差评多不多/售后怎么样"。典型："这家店靠谱吗？""退货方便吗？"
 - cost：价格对比。判据：问"多少钱/贵不贵/哪个更值/到手价/运费"。典型："两家哪个划算？""运费贵吗？"
+- recommend：卖家推荐。判据：问"买XX哪家靠谱/推荐一家/有没有好的卖家/选哪家好"。典型："买书架哪家靠谱？""推荐个卖咖啡的"
 
 【B·类业务意图 —— 讲解或温和拒绝，不查数据】
 - capability：自我介绍。判据：问"你是谁/能做什么/有哪些功能"。典型："你能帮我做什么？""你是什么助手？"
@@ -78,11 +79,13 @@ INTENT_PROMPT = """你是一个意图分类器。将用户问题分到以下标�
 2. 问"你是谁/能做什么"→capability；问"你怎么判断/凭什么"→methodology
 3. 问"多久/几天/来得及吗"→time；问"多少钱/贵不贵/运费"→cost
 4. 跟网购相关但没实现→unsupported；跟网购完全无关→other
+5. 问"买XX哪家靠谱/推荐一家"→recommend（泛推荐）；问"这家卖家靠谱吗"→risk（指定卖家）
+6. "买XX哪家靠谱"同时涉及品类→recommend；"XX卖家靠不靠谱"同时提到卖家ID→risk
 
 【输出格式】
 一句话可能涉及多个意图（如"多久到+运费贵吗"= time+cost）。只输出 JSON：
 {{"intents": ["time"], "reason": "简短理由"}}
-intents 是数组，单意图时也用数组。合法值：time / risk / cost / capability / methodology / unsupported / other
+intents 是数组，单意图时也用数组。合法值：time / risk / cost / recommend / capability / methodology / unsupported / other
 
 {history_block}"""
 
@@ -130,6 +133,7 @@ EXTRACT_PROMPT = """从用户问题中提取查询参数，只输出 JSON，字�
 
 seller_ids 是数组，用户提到几个就填几个。例如提到两个卖家就填 ["aaa","bbb"]。
 如果用户用了"那""换个""换回"等追问词，请根据对话历史补全省略的参数。
+recommend 意图时 seller_ids 不适用（不查特定卖家），但 category 是核心，必须提取。
 
 {history_block}"""
 
@@ -164,33 +168,86 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
         seller_state = params.get("seller_state")
         buyer_state = params.get("buyer_state")
         category = params.get("category")
+        seller_ids = params.get("seller_ids") or []
 
         # 缺收货地 → 反问
         if not buyer_state:
             return {"need_info": "buyer_state"}
 
-        # 有卖家州 → 直接查
-        if seller_state and buyer_state:
-            return query_timing(seller_state, buyer_state)
+        # ── 确定 effective_seller_state（4 级优先级）──
+        effective_ss = None
 
-        # 没有卖家州，有品类+买家州 → 先查品类主要发货州
-        if category and buyer_state:
+        # 优先级 1：用户显式指定发货州
+        if seller_state:
+            effective_ss = seller_state
+        # 优先级 2：有卖家 ID → 反查发货州
+        elif seller_ids:
+            ss, err = query_seller_state(seller_ids[0])
+            if ss:
+                effective_ss = ss
+        # 优先级 3：品类→主要发货州推断
+        elif category:
             main_state = get_main_seller_state(category)
             if main_state:
-                result = query_timing(main_state, buyer_state)
-                if result:
-                    result["source"] = f"品类 {category} 主要发货州 {main_state}→{buyer_state}"
-                    result["inferred_seller_state"] = main_state
-                    return result
+                effective_ss = main_state
 
-        # 兜底：全卖家→买家州
-        return query_timing(None, buyer_state)
+        # ── 查实际时效分布 + 承诺偏差 ──
+        timing = query_timing(effective_ss, buyer_state) if effective_ss else query_timing(None, buyer_state)
+        promise = query_promise(effective_ss, buyer_state) if effective_ss else None
+
+        if timing is None:
+            return None
+
+        # 给 timing 加上推断来源
+        if effective_ss:
+            if seller_ids:
+                timing["source"] = f"卖家 {seller_ids[0][:10]}..（{effective_ss}）→{buyer_state}"
+            elif category:
+                timing["source"] = f"品类 {category} 主要发货州 {effective_ss}→{buyer_state}"
+            else:
+                timing["source"] = f"route {effective_ss}→{buyer_state}"
+            timing["inferred_seller_state"] = effective_ss
+
+        # 合并承诺数据（如有）
+        if promise:
+            timing["avg_promise"] = promise["avg_promise"]
+            timing["avg_actual"] = promise["avg_actual"]
+            timing["avg_gap"] = promise["avg_gap"]
+            timing["ontime_rate"] = promise["ontime_rate"]
+
+        return timing
 
     elif intent == "risk":
         seller_ids = params.get("seller_ids") or []
-        if not seller_ids:
-            return {"need_info": "seller_ids"}
-        return query_seller_risk(seller_ids[0], params.get("category"))
+        category = params.get("category")
+
+        # 有卖家 → 聚合风险 + 跨品类 + 差评原因
+        if seller_ids:
+            sid = seller_ids[0]
+            risk = query_seller_risk(sid, category)
+            if risk is None:
+                return None
+
+            # 跨品类表现
+            cats = query_seller_categories(sid)
+            if cats:
+                risk["cross_category"] = cats
+
+            # 卖家差评原因
+            reasons = query_review_reason(seller_id=sid)
+            if reasons:
+                risk["review_reasons"] = reasons
+
+            return risk
+
+        # 只有品类（无卖家）→ 品类级差评原因
+        if category:
+            reasons = query_review_reason(category=category)
+            if reasons:
+                return {"category_reasons": reasons}
+            return None
+
+        return {"need_info": "seller_ids"}
 
     elif intent == "cost":
         seller_ids = params.get("seller_ids") or []
@@ -201,23 +258,52 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
         if not buyer_state:
             return {"need_info": "buyer_state"}
 
-        # 缺卖家 → 反问
-        if not seller_ids:
-            return {"need_info": "seller_ids"}
+        # 有卖家但缺品类 → 反问品类（不同品类价格差异大，必须指定）
+        if seller_ids and not category:
+            return {"need_info": "category"}
 
-        # 多个卖家 → 分别查询，返回对比结果
+        # 多个卖家 → 对比 + 性价比评分
         if len(seller_ids) >= 2:
             results = []
             for sid in seller_ids:
                 r = query_cost(sid, category, buyer_state)
                 if r:
                     results.append(r)
-            if results:
-                return {"compare": True, "sellers": results}
-            return None
+            if not results:
+                return None
+
+            data = {"compare": True, "sellers": results}
+
+            # 追加性价比评分
+            if category and len(seller_ids) >= 2:
+                vs = query_value_score(seller_ids, category, buyer_state)
+                if isinstance(vs, list):
+                    data["value_scores"] = vs
+
+            return data
+
+        # 只有品类（无卖家）→ 运费参考 + 价格基线
+        if not seller_ids and category:
+            freight = query_freight_estimate(category, buyer_state)
+            price_baseline = query_cost_baseline(category, buyer_state)
+            data = {}
+            if freight:
+                data["freight_estimate"] = freight
+            if price_baseline:
+                data["price_baseline"] = price_baseline
+            return data if data else None
 
         # 单个卖家
-        return query_cost(seller_ids[0], category, buyer_state)
+        if seller_ids:
+            return query_cost(seller_ids[0], category, buyer_state)
+
+        return {"need_info": "seller_ids"}
+
+    elif intent == "recommend":
+        category = params.get("category")
+        if not category:
+            return {"need_info": "category"}
+        return query_recommend(category, params.get("buyer_state"))
 
     return None
 
@@ -252,17 +338,55 @@ ANSWER_PROMPT = f"""你是懂履约的购物助手。以下是查询到的结构
 3. 标注不确定性：样本少、非实时、推断的发货州
 4. 决定权交回用户（"如果你…可以…"）
 
-铁律：只基于提供的数据回答，不得编造或推算。
+【防幻觉铁律——违反即失败】
+5. 每个维度（时效/风险/价格/推荐）只基于提供的数据回答。该维度数据为 null 或未提供 → 明确说"这个暂时没有数据"或不主动提，严禁自行估算天数、金额、概率。
+   ❌ 数据里没有 time 字段，却回答"大概 15 天" → 幻觉
+   ✅ 数据里没有 time 字段 → "时效数据暂时查不到"或不提
+6. 回答按用户提问顺序分点组织（先问的先答），不要混成一团。
+
+【时效意图专属规则】
+7. 如果数据中有 avg_promise / avg_actual / ontime_rate（承诺偏差数据），补一句：
+   "平台承诺约 X 天，实际平均 Y 天，约 Z 成订单能按时到"
+   模糊化：X/Y 用"约/左右"，Z 用"九成/绝大多数"等。没有承诺数据时严禁编造承诺天数。
+8. 可预测性：用 p90 体现波动——"大多数约 X 天，九成在 Y 天内"（Y-X 大说明波动大），让用户感知时效稳不稳。
+9. 承诺信息是加分项不是必答项，别把回答堆成数据报表。用户只问"多久到"时，以实际时效为主，承诺偏差点到为止。
+
+【风险意图专属规则】
+10. 数据中含 cross_category（跨品类表现）时，概括为：
+    - "这家在 X 类卖得比较多，差评率比平均线低/高/差不多"
+    - 如果 best 和 worst 品类差距大，点一句"Y 类比较稳，Z 类差评偏高"
+    - 品类列表不用逐个罗列，挑最好和最差的说
+11. 数据中含 review_reasons（差评原因）时，用自然语言概括：
+    - "被骂得最多的是 W（约占 X 成），其次是 Y"
+    - "其他"占比高时如实说"还有一部分评论没法归类"
+    - note 字段标注"样本少"时要提及，不要忽略
+12. 数据中含 category_reasons（品类级差评原因，无卖家）时：
+    - "这类商品最常见的差评是 W，占了差不多 X 成"
+    - 强调是品类共性，不是某个卖家的问题
+13. 差评原因描述必须来自数据，严禁编造原因关键词或比例。
+
+【价格意图专属规则】
+14. 数据中含 value_scores（性价比评分）时，讲综合排序：
+    - "综合看 X 更值：价格更低 + 时效更快 + 风险更低"
+    - 如果某卖家某维度拖后腿，点一句"但时效偏慢"或"差评率稍高"
+    - 评分是数据层算好的，LLM 只解释排序理由，不得自创评分依据
+15. 数据中含 freight_estimate（品类运费参考）时：
+    - "这类商品运费一般 X 左右"
+    - 必须提及 note 中的不确定性（"受重量、距离、物流商影响"）
+    - 如有 price_baseline，补一句"到手价大概 Y 左右"
+16. 多卖家对比时，按 value_score 从高到低说，不要只报价格。
+17. 价格数字必须模糊化（"大概 X 左右""约 Y"），禁止精确到小数。
 
 {SAFETY_RULES}"""
 
 # ── 类业务意图 + 其他意图的 system prompt ──
 _CAPABILITY_PROMPT = f"""你是"懂履约的购物助手"，一个帮用户做网购下单前决策的 AI。
 
-用户问你是什么/能做什么。请口语化介绍你能帮用户做的三件事：
+用户问你是什么/能做什么。请口语化介绍你能帮用户做的四件事：
 1. 判断时效——某件商品送到用户那里大概要多久
 2. 识别卖家风险——这家店退货靠不靠谱、差评率高不高
 3. 对比价格——两家店哪个更划算、到手价差多少
+4. 推荐卖家——帮你找出某品类里口碑好的卖家
 
 可以带一两个提问示例。语气自然亲切，像朋友推荐工具。不要编造不存在的能力。
 
@@ -281,11 +405,16 @@ _METHODOLOGY_PROMPT = f"""你是"懂履约的购物助手"。用户在问你的�
 
 _UNSUPPORTED_PROMPT = f"""你是"懂履约的购物助手"。用户想要你做一个你目前做不到的事。
 
-要求：
-- 温和说明"目前还不具备这个功能"，不要冷冰冰地拒绝
-- 然后自然地引导回你现有的能力——"但我可以帮你看看这类商品的时效/价格/卖家风险，需要吗？"
+你有且只有以下三件能力：
+1. 配送时效——某件商品送到用户那里大概要多久
+2. 卖家风险——这家店差评率高不高、退货靠不靠谱
+3. 到手价格对比——两家店哪个更划算、含运费到手价差多少
+
+【硬约束——违反即失败】
+- 你没有任何其他功能。引导用户时只能提到上述三件，提到任何额外功能（如"历史价格走势""比价记录""物流轨迹""优惠券""砍价"等）都是错误。
+- 温和说明"目前还不具备这个功能"
+- 引导话术只能是："但我可以帮你看看配送时效/卖家靠不靠谱/到手价格，需要吗？"
 - 语气软化，像朋友说"这个我还不会，但我可以帮你看看别的"
-- 不要编造不存在的功能
 
 {SAFETY_RULES}"""
 
@@ -299,16 +428,38 @@ _OTHER_PROMPT = f"""你是"懂履约的购物助手"，但用户在问和网购�
 
 {SAFETY_RULES}"""
 
+_RECOMMEND_PROMPT = f"""你是"懂履约的购物助手"。用户在问某品类推荐哪家卖家。
+
+以下是查询到的推荐数据（该品类中好评率高于平均水平、且有足够订单量的卖家）：
+
+{{data}}
+
+回答规则：
+1. 先给结论：推荐了哪几家，一句话概括口碑好在哪里
+2. 数据依据必须模糊化：禁止输出 neg_rate、n_reviews 等原始指标
+   ✅ "这几家的差评率都比品类平均低不少"
+   ✅ "订单量也够，口碑比较稳定"
+   ❌ "neg_rate=0.03，n_reviews=156"
+3. 如有时效数据，可以补一句"送到你那里大概X天"
+4. 强调仅供参考，决定权交回用户
+5. 语气自然，像朋友帮你挑店
+
+铁律：只基于提供的数据回答，不得编造或推算。
+
+{SAFETY_RULES}"""
+
 _SPECIAL_PROMPTS = {
     "capability": _CAPABILITY_PROMPT,
     "methodology": _METHODOLOGY_PROMPT,
     "unsupported": _UNSUPPORTED_PROMPT,
     "other": _OTHER_PROMPT,
+    "recommend": _RECOMMEND_PROMPT,
 }
 
 _NEED_INFO_QUESTIONS = {
     "buyer_state": "我需要知道你的收货地（比如你在哪个州），才能帮你查。",
     "seller_ids": "你想查哪家卖家？请提供卖家 ID 或名称。",
+    "category": "你想买哪类商品？比如书架、咖啡、美妆、手表等。",
 }
 
 
@@ -354,6 +505,21 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
     if data is None:
         return "抱歉，这个数据暂时查不到，建议你直接联系卖家确认。"
 
+    # recommend 返回 list → 用推荐专用 prompt
+    if isinstance(data, list):
+        data_str = json.dumps(data, ensure_ascii=False, indent=2)
+        prompt = _RECOMMEND_PROMPT.format(data=data_str)
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_question},
+            ],
+            temperature=0.7,
+            max_tokens=500,
+        )
+        return resp.choices[0].message.content.strip()
+
     # 业务意图 → 数据驱动 + 安全约束
     data_str = json.dumps(data, ensure_ascii=False, indent=2)
     prompt = ANSWER_PROMPT.format(data=data_str)
@@ -371,43 +537,131 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
 
 
 # ═══════════════════════════════════════════════════════
-#  完整流程
+#  完整流程（多意图端到端）
 # ═══════════════════════════════════════════════════════
+_BUSINESS_INTENTS = {"time", "risk", "cost", "recommend"}
+
+
 def chat(user_question: str, history=None):
     trace = []
 
     # Step 1: 意图识别
     intent_result = classify_intent(user_question, history)
-    intent = intent_result["intent"]
-    trace.append({"step": "①意图识别", "content": f"{intent}（{intent_result['reason']}）"})
+    all_intents = intent_result.get("intents", [intent_result.get("intent")])
+    trace.append({"step": "①意图识别", "content": f"{' + '.join(all_intents)}（{intent_result['reason']}）"})
 
-    # Step 2: 参数提取
-    params = extract_params(user_question, intent, history)
+    # 分离业务意图 vs 特殊意图
+    biz_intents = [i for i in all_intents if i in _BUSINESS_INTENTS]
+    special_intents = [i for i in all_intents if i not in _BUSINESS_INTENTS]
+
+    # ── 无业务意图 → 走原有单意图逻辑 ──
+    if not biz_intents:
+        intent = all_intents[0]
+        params = extract_params(user_question, intent, history)
+        trace.append({"step": "②参数提取", "content": json.dumps(params, ensure_ascii=False)})
+        data = call_tool(intent, params)
+        trace.append({"step": "④数据查询", "content": json.dumps(str(data), ensure_ascii=False) if data else "无结果"})
+        answer = generate_answer(user_question, data)
+        trace.append({"step": "⑤回答生成", "content": answer[:100] + "..." if len(answer) > 100 else answer})
+        return intent_result, params, data, answer, trace
+
+    # ── 有业务意图 → 统一参数提取 ──
+    # 用所有业务意图的并集来提取参数（一次提取，各意图取用）
+    primary_intent = biz_intents[0]
+    params = extract_params(user_question, primary_intent, history)
     trace.append({"step": "②参数提取", "content": json.dumps(params, ensure_ascii=False)})
 
-    # Step 2.5: 州名校验
-    bad_state = validate_states(params) if intent in ("time", "cost") else None
-    if bad_state:
-        trace.append({"step": "②.5州名校验", "content": f"❌ {bad_state} 不是合法巴西州"})
-        answer = _invalid_state_msg(bad_state)
+    # 州名校验（time/cost 需要）
+    if any(i in ("time", "cost") for i in biz_intents):
+        bad_state = validate_states(params)
+        if bad_state:
+            trace.append({"step": "②.5州名校验", "content": f"❌ {bad_state} 不是合法巴西州"})
+            answer = _invalid_state_msg(bad_state)
+            trace.append({"step": "⑤回答生成", "content": answer[:100]})
+            return intent_result, params, {"invalid_state": bad_state}, answer, trace
+
+    # ── 遍历每个业务意图，逐个查询 ──
+    results = []  # [{"intent": "time", "data": {...}}, ...]
+    need_info_map = {}  # {"buyer_state": ["time"], "seller_ids": ["risk"]}
+
+    for biz_i in biz_intents:
+        d = call_tool(biz_i, params)
+        # 收集 need_info
+        if d and "need_info" in d:
+            key = d["need_info"]
+            need_info_map.setdefault(key, []).append(biz_i)
+            trace.append({"step": f"④数据查询·{biz_i}", "content": f"⚠ 缺参数: {key}"})
+        else:
+            results.append({"intent": biz_i, "data": d})
+            trace.append({"step": f"④数据查询·{biz_i}", "content": json.dumps(str(d), ensure_ascii=False) if d else "无结果"})
+
+    # ── 缺参数处理：所有业务意图都缺 → 合并反问；部分缺 → 标记 ──
+    if len(need_info_map) == len(biz_intents):
+        # 全部缺参数 → 合并一次反问
+        missing = []
+        for key, intents in need_info_map.items():
+            missing.append(_NEED_INFO_QUESTIONS.get(key, "请补充信息。"))
+        answer = "还需要你补充一些信息：\n" + "\n".join(f"- {m}" for m in missing)
         trace.append({"step": "⑤回答生成", "content": answer[:100]})
-        return intent_result, params, {"invalid_state": bad_state}, answer, trace
+        return intent_result, params, {"need_info_all": need_info_map}, answer, trace
 
-    # Step 3: 品类推断（如有）
-    if intent == "time" and params.get("category") and params.get("buyer_state") and not params.get("seller_state"):
-        inferred_state = get_main_seller_state(params["category"])
-        if inferred_state:
-            trace.append({"step": "③品类推断", "content": f"{params['category']} → 主要发货州 {inferred_state}"})
+    # ── 有结果 → 聚合回答 ──
+    # 构建结构化数据块（只含真实查询结果）
+    data_block = {}
+    for r in results:
+        if r["data"] is not None:
+            data_block[r["intent"]] = r["data"]
 
-    # Step 4: 数据查询
-    data = call_tool(intent, params)
-    trace.append({"step": "④数据查询", "content": json.dumps(str(data), ensure_ascii=False) if data else "无结果"})
+    # 缺参数的意图单独说明
+    missing_notes = []
+    for key, intents in need_info_map.items():
+        missing_notes.append(f"{'+'.join(intents)}: {_NEED_INFO_QUESTIONS.get(key, '请补充信息。')}")
 
-    # Step 5: 回答生成
-    answer = generate_answer(user_question, data)
+    # 单意图 → 走原有 generate_answer
+    if len(results) == 1 and not missing_notes:
+        intent = results[0]["intent"]
+        data = results[0]["data"]
+        # recommend 返回 list 时 generate_answer 已能处理
+        answer = generate_answer(user_question, data)
+        trace.append({"step": "⑤回答生成", "content": answer[:100] + "..." if len(answer) > 100 else answer})
+        return intent_result, params, data, answer, trace
+
+    # 多意图 → 聚合 LLM 回答
+    data_str = json.dumps(data_block, ensure_ascii=False, indent=2)
+    extra = ""
+    if missing_notes:
+        missing_list = "\n".join(f"- {m}" for m in missing_notes)
+        extra = f"""
+
+【缺参数意图——强指令——违反即失败】
+以下意图因缺少关键信息无法查询，必须在回答中明确告知用户：
+{missing_list}
+
+回答结构必须遵守：
+1. 先回答已查到数据的维度（正常回答）
+2. 再用单独一段说明缺失维度："关于 XX，需要你补充 YY 才能查询"（例："价格对比需要你告诉我是哪类商品，才能帮你比到手价"）
+3. 引导用户补充信息
+
+铁律：
+- 缺失维度一律不给结论——没查到价格就不能说"综合更推荐 X"，没查到风险就不能说"这家更靠谱"
+- 只能基于已查到的维度谈，且要明说"这只是时效维度的看法"或"这只是风险维度的参考"
+- 违反以上规则即为失败回答"""
+
+    prompt = ANSWER_PROMPT.format(data=data_str) + extra
+
+    resp = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_question},
+        ],
+        temperature=0.7,
+        max_tokens=600,
+    )
+    answer = resp.choices[0].message.content.strip()
     trace.append({"step": "⑤回答生成", "content": answer[:100] + "..." if len(answer) > 100 else answer})
 
-    return intent_result, params, data, answer, trace
+    return intent_result, params, data_block, answer, trace
 
 
 # ═══════════════════════════════════════════════════════
@@ -453,6 +707,10 @@ def self_test():
     verify = [
         ("你是怎么判断配送时效的？", "methodology"),
         ("这家到 RN 要多久，运费贵吗？", "time + cost"),
+        ("买书架哪家靠谱？", "recommend"),
+        ("282f23 这家卖家靠谱吗？", "risk"),
+        ("咖啡到 RN 多久？", "time"),
+        ("帮我砍个价", "unsupported"),
     ]
     for q, expected in verify:
         print(f"\n{'=' * 60}")
@@ -470,9 +728,10 @@ def self_test():
     print("▓" * 60)
     dynamic_tests = [
         ("今天天气怎么样？", "other", ["我主要帮你做网购决策"]),
-        ("帮我砍个价", "unsupported", ["暂时还不具备", "但我可以帮你"]),
+        ("帮我砍个价", "unsupported", ["历史价格走势", "比价记录", "物流轨迹", "优惠券"]),
         ("你是怎么判断配送时效的？", "methodology", ["P50", "P90", "n=", "中位数"]),
         ("这款美白霜能祛斑吗？", "other", ["效果因人而异"]),
+        ("买书架哪家靠谱？", "recommend", ["neg_rate", "n_reviews", "n="]),
     ]
     for q, expected_intent, banned_keywords in dynamic_tests:
         print(f"\n{'=' * 60}")
@@ -495,6 +754,64 @@ def self_test():
             print(f"\n⚠️  违规: 出现了禁止词 {violations}")
         else:
             print(f"\n✅ 未出现禁止词")
+        print()
+
+    # ── 多意图端到端验收 ──
+    print("\n" + "▓" * 60)
+    print("  Part 4: 多意图端到端验收")
+    print("▓" * 60)
+
+    multi_tests = [
+        {
+            "q": "a3dd39 退货靠谱吗？发到 MG 大概几天？",
+            "expect_intents": ["risk", "time"],
+            "must_contain_trace": ["④数据查询·risk", "④数据查询·time"],
+            "banned_in_answer": ["15 天"],  # 防幻觉：不应出现编造数字
+        },
+        {
+            "q": "这家到 RN 要多久？运费贵吗？",
+            "expect_intents": ["time", "cost"],
+            "must_contain_trace": ["④数据查询·time", "④数据查询·cost"],
+            "banned_in_answer": [],
+        },
+        {
+            "q": "a3dd39 靠谱吗？咖啡到 RN 多久？",
+            "expect_intents": ["risk", "time"],
+            "must_contain_trace": ["④数据查询·risk", "④数据查询·time"],
+            "banned_in_answer": [],
+        },
+    ]
+
+    for tc in multi_tests:
+        q = tc["q"]
+        print(f"\n{'=' * 60}")
+        print(f"  测试: {q}")
+        print(f"  期望意图: {' + '.join(tc['expect_intents'])}")
+        print("=" * 60)
+
+        intent_result, params, data, answer, trace = chat(q)
+        intents = intent_result.get("intents", [intent_result.get("intent")])
+
+        print(f"\n📌 意图: {' + '.join(intents)}")
+        print(f"\n💬 回答:\n{answer}")
+        print(f"\n🔍 Trace:")
+        for t in trace:
+            print(f"  {t['step']}: {t['content'][:80]}")
+
+        # 检查 trace 中是否有多意图数据查询
+        trace_steps = [t["step"] for t in trace]
+        for must in tc["must_contain_trace"]:
+            if must in trace_steps:
+                print(f"\n✅ Trace 包含 {must}")
+            else:
+                print(f"\n⚠️  Trace 缺少 {must}")
+
+        # 检查禁止词
+        for banned in tc["banned_in_answer"]:
+            if banned in answer:
+                print(f"\n⚠️  违规: 回答中出现「{banned}」（疑似幻觉）")
+            else:
+                print(f"\n✅ 未出现「{banned}」")
         print()
 
 
