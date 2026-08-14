@@ -225,9 +225,21 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
 # ═══════════════════════════════════════════════════════
 #  Step 3 · 回答生成
 # ═══════════════════════════════════════════════════════
-ANSWER_PROMPT = """你是懂履约的购物助手。以下是查询到的结构化数据：
 
-{data}
+# ── 全局安全约束（所有回答共用）──
+SAFETY_RULES = """【安全约束——必须遵守】
+- 禁止替用户做最终购买决定，决定权交回用户
+- 禁止使用煽动性带货话术
+- 美妆/护肤/保健品：严禁承诺美白/抗衰/祛斑/治病功效，仅解读公开成分，提示"效果因人而异"
+- 母婴用品：禁用"绝对安全、零风险"等绝对词汇，提示关注 3C 认证、国标、官方说明书
+- 医疗器械：不能替代医生医嘱，仅做消费品参数对比，提示"遵从医嘱"
+- 食品/生鲜：不承诺口味，提醒生产日期、配料表、过敏风险
+- 二手商品：重点强调高风险和个体差异，不担保卖家靠谱，只提供验机避坑流程"""
+
+# ── 业务意图回答 prompt（查数据给结论）──
+ANSWER_PROMPT = f"""你是懂履约的购物助手。以下是查询到的结构化数据：
+
+{{data}}
 
 回答规则：
 1. 先给结论，用口语化表达
@@ -240,26 +252,58 @@ ANSWER_PROMPT = """你是懂履约的购物助手。以下是查询到的结构�
 3. 标注不确定性：样本少、非实时、推断的发货州
 4. 决定权交回用户（"如果你…可以…"）
 
-铁律：只基于提供的数据回答，不得编造或推算。"""
+铁律：只基于提供的数据回答，不得编造或推算。
 
+{SAFETY_RULES}"""
 
-_SPECIAL_ANSWERS = {
-    "capability": (
-        "我可以帮你做三件事，都是网购下单前的决策：\n\n"
-        "1️⃣ **判断时效**——某件商品送到你那里大概要多久、能不能赶上你的时间；\n"
-        "2️⃣ **识别卖家风险**——这家店退货靠不靠谱、差评率高不高；\n"
-        "3️⃣ **对比价格**——两家店哪个更划算、到手价差多少。\n\n"
-        "你可以直接问我，比如『买书架送到 SP 要多久』『卖家 xxx 靠谱吗』『这两家哪个值』。"
-    ),
-    "methodology": (
-        "我的判断基于巴西电商 Olist 的真实订单数据（约 10 万单），具体来说：\n\n"
-        "• **时效**：统计同一路线（发货州→收货州）的历史配送天数，给出中位数和 90% 分位；\n"
-        "• **卖家风险**：看该卖家的差评率和退货关键词提及率，和品类平均水平对比；\n"
-        "• **价格对比**：汇总卖家在该品类的均价+运费，算到手价。\n\n"
-        "数据是离线快照，不是实时的，所以会标注不确定性。我只是帮你做参考，最终决定权在你。"
-    ),
-    "unsupported": "这个功能我暂时还没做（我目前主要帮你判断配送时效、退货风险、价格）。不过我可以帮你看看这类商品的时效或价格，需要吗？",
-    "other": "我主要帮你做网购决策，这个问题我帮不上，建议你用专门的工具。",
+# ── 类业务意图 + 其他意图的 system prompt ──
+_CAPABILITY_PROMPT = f"""你是"懂履约的购物助手"，一个帮用户做网购下单前决策的 AI。
+
+用户问你是什么/能做什么。请口语化介绍你能帮用户做的三件事：
+1. 判断时效——某件商品送到用户那里大概要多久
+2. 识别卖家风险——这家店退货靠不靠谱、差评率高不高
+3. 对比价格——两家店哪个更划算、到手价差多少
+
+可以带一两个提问示例。语气自然亲切，像朋友推荐工具。不要编造不存在的能力。
+
+{SAFETY_RULES}"""
+
+_METHODOLOGY_PROMPT = f"""你是"懂履约的购物助手"。用户在问你的判断方法/数据来源。
+
+请用口语解释你怎么帮用户做判断，要求：
+- 模糊表述，禁止出现 P50、P90、n=、样本数、中位数、精确百分比等内部指标
+- 用"参考历史订单里大多数人的实际收货时间""跟同类目其他卖家的平均线比"这类自然语言
+- 说明"数字是从真实订单数据里查出来的，不是我编的"
+- 说明数据是离线快照不是实时的，会标注不确定性
+- 语气自然，不要像在念说明书
+
+{SAFETY_RULES}"""
+
+_UNSUPPORTED_PROMPT = f"""你是"懂履约的购物助手"。用户想要你做一个你目前做不到的事。
+
+要求：
+- 温和说明"目前还不具备这个功能"，不要冷冰冰地拒绝
+- 然后自然地引导回你现有的能力——"但我可以帮你看看这类商品的时效/价格/卖家风险，需要吗？"
+- 语气软化，像朋友说"这个我还不会，但我可以帮你看看别的"
+- 不要编造不存在的功能
+
+{SAFETY_RULES}"""
+
+_OTHER_PROMPT = f"""你是"懂履约的购物助手"，但用户在问和网购无关的事。
+
+要求：
+- 直接陪用户聊，自然回答，不要拒绝、不要跳回购物话题
+- 保持温和亲切的语气
+- 你是一个懂电商履约的助手，但也可以正常闲聊
+- 如果话题敏感（医疗/法律），提醒用户咨询专业人士
+
+{SAFETY_RULES}"""
+
+_SPECIAL_PROMPTS = {
+    "capability": _CAPABILITY_PROMPT,
+    "methodology": _METHODOLOGY_PROMPT,
+    "unsupported": _UNSUPPORTED_PROMPT,
+    "other": _OTHER_PROMPT,
 }
 
 _NEED_INFO_QUESTIONS = {
@@ -276,10 +320,28 @@ def _invalid_state_msg(code: str) -> str:
     )
 
 
+def _llm_generate(system_prompt: str, user_question: str) -> str:
+    """通用 LLM 生成，用于类业务意图和其他意图"""
+    resp = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_question},
+        ],
+        temperature=0.7,
+        max_tokens=500,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def generate_answer(user_question: str, data: Optional[dict]) -> str:
-    # 特殊意图直接返回固定话术
+    # 类业务意图 / 其他意图 → LLM 动态生成
     if data and "special_intent" in data:
-        return _SPECIAL_ANSWERS.get(data["special_intent"], "暂不支持。")
+        intent = data["special_intent"]
+        prompt = _SPECIAL_PROMPTS.get(intent)
+        if prompt:
+            return _llm_generate(prompt, user_question)
+        return "暂不支持。"
 
     # 缺参数 → 反问
     if data and "need_info" in data:
@@ -292,6 +354,7 @@ def generate_answer(user_question: str, data: Optional[dict]) -> str:
     if data is None:
         return "抱歉，这个数据暂时查不到，建议你直接联系卖家确认。"
 
+    # 业务意图 → 数据驱动 + 安全约束
     data_str = json.dumps(data, ensure_ascii=False, indent=2)
     prompt = ANSWER_PROMPT.format(data=data_str)
 
@@ -383,9 +446,9 @@ def self_test():
         history.append(f"AI：{answer}")
         history = history[-10:]
 
-    # ── 新意图验收 ──
+    # ── 新意图验收（意图分类）──
     print("\n" + "▓" * 60)
-    print("  Part 2: 新意图验收")
+    print("  Part 2: 意图分类验收")
     print("▓" * 60)
     verify = [
         ("你是怎么判断配送时效的？", "methodology"),
@@ -399,6 +462,39 @@ def self_test():
         result = classify_intent(q)
         intents = result.get("intents", [result.get("intent")])
         print(f"  实际: {' + '.join(intents)}（{result['reason']}）")
+        print()
+
+    # ── 动态生成验收 ──
+    print("\n" + "▓" * 60)
+    print("  Part 3: 动态生成验收（类业务+其他意图）")
+    print("▓" * 60)
+    dynamic_tests = [
+        ("今天天气怎么样？", "other", ["我主要帮你做网购决策"]),
+        ("帮我砍个价", "unsupported", ["暂时还不具备", "但我可以帮你"]),
+        ("你是怎么判断配送时效的？", "methodology", ["P50", "P90", "n=", "中位数"]),
+        ("这款美白霜能祛斑吗？", "other", ["效果因人而异"]),
+    ]
+    for q, expected_intent, banned_keywords in dynamic_tests:
+        print(f"\n{'=' * 60}")
+        print(f"  测试: {q}")
+        print(f"  意图: {expected_intent}")
+        print(f"  禁止出现: {banned_keywords}")
+        print("=" * 60)
+
+        intent_result = classify_intent(q)
+        intents = intent_result.get("intents", [intent_result.get("intent")])
+        params = extract_params(q, intents[0])
+        data = call_tool(intents[0], params)
+        answer = generate_answer(q, data)
+
+        print(f"\n💬 回答:\n{answer}")
+
+        # 检查禁止词
+        violations = [kw for kw in banned_keywords if kw in answer]
+        if violations:
+            print(f"\n⚠️  违规: 出现了禁止词 {violations}")
+        else:
+            print(f"\n✅ 未出现禁止词")
         print()
 
 
