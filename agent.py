@@ -58,16 +58,31 @@ def validate_states(params: dict) -> Optional[str]:
 # ═══════════════════════════════════════════════════════
 #  Step 1 · 意图识别
 # ═══════════════════════════════════════════════════════
-INTENT_PROMPT = """你是一个意图分类器。判断用户问题属于哪类：
-- time：配送时效相关（能不能按时到、多久到）
-- risk：卖家靠谱度相关（退货方不方便、售后保障、差评）
-- cost：价格对比相关（哪个更值、到手价、运费）
-- capability：用户问你是谁、能做什么、有哪些功能（"你能帮我做什么""你是谁""有什么功能"）
-- unsupported：购物/履约相关但未实现的功能（砍价、查物流轨迹、催发货、退货售后流程、改地址）
-- out_of_scope：与购物完全无关（天气、股票、闲聊、问时间）
+INTENT_PROMPT = """你是一个意图分类器。将用户问题分到以下标签，可多选。
 
-输入用户问题，只输出 JSON：
-{{"intent": "time|risk|cost|capability|unsupported|out_of_scope", "reason": "简短理由"}}
+【A·业务意图 —— 需查数据给结论】
+- time：配送时效。判据：问"多久到/几天/能不能按时到/会不会迟到"。典型："送到 RN 要多久？""来得及吗？"
+- risk：卖家靠谱度。判据：问"靠不靠谱/退货方便吗/差评多不多/售后怎么样"。典型："这家店靠谱吗？""退货方便吗？"
+- cost：价格对比。判据：问"多少钱/贵不贵/哪个更值/到手价/运费"。典型："两家哪个划算？""运费贵吗？"
+
+【B·类业务意图 —— 讲解或温和拒绝，不查数据】
+- capability：自我介绍。判据：问"你是谁/能做什么/有哪些功能"。典型："你能帮我做什么？""你是什么助手？"
+- methodology：方法论。判据：问"你怎么判断/凭什么/怎么算的/数据哪来的"。典型："你是怎么判断配送时效的？""这个结论怎么来的？"
+- unsupported：购物相关但未实现。判据：想让助手执行动作但该功能没做（砍价、查物流轨迹、催发货、退货售后流程、改地址）。典型："帮我砍价""我的包裹到哪了？"
+
+【C·其他】
+- other：与网购完全无关。判据：天气、股票、闲聊、问时间、讲笑话等。典型："今天天气怎么样？""讲个笑话"
+
+【易混淆边界（必须遵守）】
+1. 问"好不好/靠谱吗"是评价→risk；求"帮我做某事"是动作→unsupported
+2. 问"你是谁/能做什么"→capability；问"你怎么判断/凭什么"→methodology
+3. 问"多久/几天/来得及吗"→time；问"多少钱/贵不贵/运费"→cost
+4. 跟网购相关但没实现→unsupported；跟网购完全无关→other
+
+【输出格式】
+一句话可能涉及多个意图（如"多久到+运费贵吗"= time+cost）。只输出 JSON：
+{{"intents": ["time"], "reason": "简短理由"}}
+intents 是数组，单意图时也用数组。合法值：time / risk / cost / capability / methodology / unsupported / other
 
 {history_block}"""
 
@@ -90,7 +105,15 @@ def classify_intent(user_question: str, history=None) -> dict:
     text = resp.choices[0].message.content.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    return json.loads(text)
+    result = json.loads(text)
+
+    # 兼容：新格式有 intents 数组，旧格式有 intent 字符串
+    if "intents" in result:
+        result["intent"] = result["intents"][0]
+    elif "intent" in result:
+        result["intents"] = [result["intent"]]
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════
@@ -134,7 +157,7 @@ def extract_params(user_question: str, intent: str, history=None) -> dict:
 
 def call_tool(intent: str, params: dict) -> Optional[dict]:
     """根据意图调用知识库查询，支持品类→主要发货州的自动推断"""
-    if intent in ("capability", "unsupported", "out_of_scope"):
+    if intent in ("capability", "methodology", "unsupported", "other"):
         return {"special_intent": intent}
 
     if intent == "time":
@@ -228,8 +251,15 @@ _SPECIAL_ANSWERS = {
         "3️⃣ **对比价格**——两家店哪个更划算、到手价差多少。\n\n"
         "你可以直接问我，比如『买书架送到 SP 要多久』『卖家 xxx 靠谱吗』『这两家哪个值』。"
     ),
+    "methodology": (
+        "我的判断基于巴西电商 Olist 的真实订单数据（约 10 万单），具体来说：\n\n"
+        "• **时效**：统计同一路线（发货州→收货州）的历史配送天数，给出中位数和 90% 分位；\n"
+        "• **卖家风险**：看该卖家的差评率和退货关键词提及率，和品类平均水平对比；\n"
+        "• **价格对比**：汇总卖家在该品类的均价+运费，算到手价。\n\n"
+        "数据是离线快照，不是实时的，所以会标注不确定性。我只是帮你做参考，最终决定权在你。"
+    ),
     "unsupported": "这个功能我暂时还没做（我目前主要帮你判断配送时效、退货风险、价格）。不过我可以帮你看看这类商品的时效或价格，需要吗？",
-    "out_of_scope": "我主要帮你做网购决策，这个问题我帮不上，建议你用专门的天气/资讯工具。",
+    "other": "我主要帮你做网购决策，这个问题我帮不上，建议你用专门的工具。",
 }
 
 _NEED_INFO_QUESTIONS = {
@@ -321,6 +351,10 @@ def chat(user_question: str, history=None):
 #  自测（5 句通用问题，不硬编码）
 # ═══════════════════════════════════════════════════════
 def self_test():
+    # ── 多轮追问链 ──
+    print("\n" + "▓" * 60)
+    print("  Part 1: 多轮追问链")
+    print("▓" * 60)
     questions = [
         "买书架送到 SP 要多久？",
         "那换咖啡呢？",
@@ -336,7 +370,7 @@ def self_test():
 
         intent_result, params, data, answer, trace = chat(q, history or None)
 
-        print(f"\n📌 意图: {intent_result['intent']}（{intent_result['reason']}）")
+        print(f"\n📌 意图: {intent_result.get('intents', [intent_result.get('intent')])}（{intent_result['reason']}）")
         print(f"📌 参数: {json.dumps(params, ensure_ascii=False)}")
         print(f"📌 数据: {json.dumps(str(data), ensure_ascii=False)}")
         print(f"\n💬 回答:\n{answer}")
@@ -345,10 +379,27 @@ def self_test():
             print(f"  {t['step']}: {t['content'][:80]}")
         print()
 
-        # 更新历史（滑动窗口 5 轮）
         history.append(f"用户：{q}")
         history.append(f"AI：{answer}")
-        history = history[-10:]  # 5轮 × 2条 = 10条
+        history = history[-10:]
+
+    # ── 新意图验收 ──
+    print("\n" + "▓" * 60)
+    print("  Part 2: 新意图验收")
+    print("▓" * 60)
+    verify = [
+        ("你是怎么判断配送时效的？", "methodology"),
+        ("这家到 RN 要多久，运费贵吗？", "time + cost"),
+    ]
+    for q, expected in verify:
+        print(f"\n{'=' * 60}")
+        print(f"  验收: {q}")
+        print(f"  期望: {expected}")
+        print("=" * 60)
+        result = classify_intent(q)
+        intents = result.get("intents", [result.get("intent")])
+        print(f"  实际: {' + '.join(intents)}（{result['reason']}）")
+        print()
 
 
 if __name__ == "__main__":
