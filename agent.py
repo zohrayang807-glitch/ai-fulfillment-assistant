@@ -22,7 +22,7 @@ client = OpenAI(
 
 # ── 导入知识库查询 ──
 sys.path.insert(0, str(Path(__file__).resolve().parent / "knowledge_base"))
-from query import query_timing, query_promise, query_seller_risk, query_cost, query_recommend, query_seller_state, query_seller_categories, query_review_reason, query_value_score, query_freight_estimate, query_cost_baseline
+from query import query_timing, query_promise, query_seller_risk, query_cost, query_recommend, query_seller_state, query_seller_categories, query_review_reason, query_value_score, query_freight_estimate, query_cost_baseline, query_ship_time
 
 # ── 加载品类→主要发货州映射 ──
 import pandas as pd
@@ -215,6 +215,14 @@ def call_tool(intent: str, params: dict) -> Optional[dict]:
             timing["avg_gap"] = promise["avg_gap"]
             timing["ontime_rate"] = promise["ontime_rate"]
 
+        # ── 卖家发货时效（仅当有 seller_ids 时查询）──
+        if seller_ids:
+            ship_time = query_ship_time(seller_ids[0])
+            if ship_time and "error" not in ship_time:
+                timing["ship_time"] = ship_time
+            else:
+                timing["ship_time"] = None
+
         return timing
 
     elif intent == "risk":
@@ -350,6 +358,17 @@ ANSWER_PROMPT = f"""你是懂履约的购物助手。以下是查询到的结构
    模糊化：X/Y 用"约/左右"，Z 用"九成/绝大多数"等。没有承诺数据时严禁编造承诺天数。
 8. 可预测性：用 p90 体现波动——"大多数约 X 天，九成在 Y 天内"（Y-X 大说明波动大），让用户感知时效稳不稳。
 9. 承诺信息是加分项不是必答项，别把回答堆成数据报表。用户只问"多久到"时，以实际时效为主，承诺偏差点到为止。
+
+【发货+运输拆段规则——核心差异点】
+10. 数据中含 ship_time（卖家发货时效）时，必须拆段回答：
+    - 先讲发货段："这家店发货挺快的，一般当天就交给快递"（median_days<1.5）/ "大概要等两三天才发货"（median_days 2-4）/ "发货偏慢，一般要一周左右"（median_days>5）
+    - 再讲运输段："快递运到你那大概 X 天"
+    - 最后总结："总共大概 Y 天左右"
+    - 让用户能感知：慢是慢在发货还是慢在路上（这是"懂履约"的核心差异点）
+11. 发货天数必须模糊化（当天/一两天/三天左右/一周左右），禁止输出 median_days 精确值。
+    ✅ "发货大概要等两三天"
+    ❌ "median_days=2.85"
+12. 无 ship_time 数据（品类推断/全量兜底场景）时，只讲运输段，严禁编造发货天数。
 
 【风险意图专属规则】
 10. 数据中含 cross_category（跨品类表现）时，概括为：

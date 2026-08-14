@@ -43,6 +43,17 @@ def _load_review_reason():
     return _review_reason
 
 
+# ── 懒加载 seller_ship_time ──
+_seller_ship_time = None
+
+
+def _load_seller_ship_time():
+    global _seller_ship_time
+    if _seller_ship_time is None:
+        _seller_ship_time = pd.read_csv(KB / "seller_ship_time.csv")
+    return _seller_ship_time
+
+
 # ── 懒加载：首次调用时读 CSV，之后复用 ──
 _route_timing = None
 _seller_risk = None
@@ -156,6 +167,35 @@ def query_promise(seller_state, buyer_state):
             }
 
     return None
+
+
+def query_ship_time(seller_id):
+    """
+    查询卖家发货时效（下单→交给快递 的天数）。
+
+    返回 dict: {seller_id, seller_city, seller_state, n, median_days, avg_days, source}
+    查不到返回 None。
+
+    逻辑：前缀匹配 + 唯一性检查。
+    """
+    df = _load_seller_ship_time()
+
+    mask, err = _unique_seller(df, seller_id)
+    if err == "no_match":
+        return None
+    if err:
+        return {"error": err}
+
+    row = df[mask].iloc[0]
+    return {
+        "seller_id": row["seller_id"],
+        "seller_city": row.get("seller_city"),
+        "seller_state": row.get("seller_state"),
+        "n": int(row["n"]),
+        "median_days": row["median_days"],
+        "avg_days": row["avg_days"],
+        "source": f"seller {seller_id[:10]}.. ship time",
+    }
 
 
 def _unique_seller(df, seller_id):
