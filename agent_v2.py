@@ -41,7 +41,6 @@ from query import (
 # ── V2 聚合查询（不改 query.py）──
 from query_v2 import (
     query_category_freight,
-    query_category_ship_time,
     query_route_freight,
     query_route_freight_single,
 )
@@ -127,6 +126,11 @@ INTENT_V2_PROMPT = """你是一个意图分类器。将用户问题解析为结�
 - 例："买书架送到 SP 要多久"→ query×route×transit_time（无卖家，只有运输段）
 - 例："咖啡送到 RN 要几天"→ query×category×transit_time（无卖家，只有运输段）
 
+⚠️ ship_time（发货时长）只支持 seller 维度：
+- 发货是商家行为，品类不会发货，所以"category×ship_time"是伪命题
+- 用户问"哪类商品发货快/各品类发货速度排名/哪些品类发货慢"→ 识别为 unsupported（不支持的操作），不要识别为 aggregate×category×ship_time
+- route 维度同理：发货时长是卖家行为，不是路线属性
+
 【对话类意图（不查数据，单独处理）】
 - capability：自我介绍（"你是谁/能做什么"）
 - methodology：方法论（"你怎么判断/数据哪来的"）
@@ -136,6 +140,7 @@ INTENT_V2_PROMPT = """你是一个意图分类器。将用户问题解析为结�
 【易混淆边界】
 1. 问"发货多久/几天才发货"→ metric=ship_time（注意：是发货段，不是运输段）
 2. 问"多久到/几天到/来得及吗"→ 无卖家时 metric=transit_time；有卖家时 metric=total_time
+2a. ⚠️ "发到XX多久/运到XX几天"是问运输段（transit_time），不是问总时长。只有明确说"总共多久/一共几天"才是 total_time
 3. 问"运费/物流费"→ metric=freight；问"价格/多少钱/到手价"→ metric=price
 4. 问"靠不靠谱/差评多不多"→ metric=neg_rate
 5. 问"准时吗/会不会迟到/承诺几天"→ metric=ontime_rate 或 promise_gap
@@ -144,6 +149,12 @@ INTENT_V2_PROMPT = """你是一个意图分类器。将用户问题解析为结�
 8. 跟网购相关但没实现→ unsupported；完全无关→ other
 9. 问"谁快/谁便宜/谁靠谱/对比/比较/哪个更好"→ compare（即使只提到一个卖家也识别为 compare，系统会校验数量）
 10. "A 和 B 谁发货快"→ compare×seller×ship_time；"A 对比价格"→ compare×seller×price
+
+【多轮对话继承规则】
+当用户的话只是补充信息（如"我在MS州""SP""就书架吧""送到RN"），没有提出新的问题时，继承上一轮的三元组（operation×dimension×metric），只更新 entities 参数重新查询。
+- 例：上一轮 recommend → 用户说"我在MS州" → 仍为 recommend×category（带 buyer_state=MS），不要把补充信息识别成新的 query
+- 例：上一轮 query×seller×ship_time → 用户说"送到RN" → 仍为 query×seller×ship_time（补充 buyer_state）
+- 判断标准：用户没有问新的指标或操作，只是补充了收货地/品类/卖家等参数
 
 【输出格式】
 只输出 JSON。一句话可能涉及多个意图就输出多个三元组。对话类意图不进入三元组。
@@ -239,7 +250,6 @@ REQUIRED_PARAMS = {
     ("recommend", "category", None): ["category"],
     # ── aggregate（无需额外参数，返回维度级排名）──
     ("aggregate", "category", "freight"): [],
-    ("aggregate", "category", "ship_time"): [],
     ("aggregate", "route", "freight"): [],
     # ── compare × seller（复用 query 的必填规则）──
     ("compare", "seller", "ship_time"): ["seller_ids"],
@@ -528,6 +538,9 @@ def _query_recommend(entities: dict) -> Optional[dict]:
             "seller_state": loc.get("seller_state"),
             "neg_rate": row.get("neg_rate"),
             "n_reviews": row.get("n_reviews"),
+            "median_days": row.get("median_days"),
+            "p90_days": row.get("p90_days"),
+            "timing_source": row.get("timing_source"),
         })
     return enriched
 
@@ -538,13 +551,6 @@ def _agg_category_freight(entities: dict) -> list:
     """aggregate × category × freight"""
     sd = entities.get("sort_direction", "desc")
     return query_category_freight(top_n=5, ascending=(sd == "asc"))
-
-
-def _agg_category_ship_time(entities: dict) -> list:
-    """aggregate × category × ship_time"""
-    sd = entities.get("sort_direction", "desc")
-    # "最快" = ascending=True（median_days 小的排前面）
-    return query_category_ship_time(top_n=5, ascending=(sd == "asc"))
 
 
 def _agg_route_freight(entities: dict) -> list:
@@ -583,7 +589,6 @@ QUERY_DISPATCH = {
     ("recommend", "category", None): _query_recommend,
     # aggregate
     ("aggregate", "category", "freight"): _agg_category_freight,
-    ("aggregate", "category", "ship_time"): _agg_category_ship_time,
     ("aggregate", "route", "freight"): _agg_route_freight,
 }
 
@@ -683,14 +688,16 @@ ANSWER_V2_PROMPT = f"""你是懂履约的购物助手，语气柔和、亲切、
 8. 只回答用户明确问的指标，不主动补充用户没问的维度。例如用户只问"多久发货"→ 只答发货时长，不得脑补"运输 X 天、总共 Y 天"；用户只问"运费"→ 只答运费，不加价格对比
 9. 禁止脑补数据之外的信息（如"清关""转运""分拣""派送"等数据里没有的环节），只基于提供的数据说话，不添加任何推测性描述
 
-【发货+运输拆段规则——仅当用户问 total_time 或同时问了发货+运输时才拆段】
-10. 数据中含 ship_time 且用户问了总时长时，拆段回答：
-    - 发货段："这家店发货挺快的，一般当天就交给快递" / "大概要等两三天才发货" / "发货偏慢，要一周左右"
-    - 运输段："快递运到你那大概 X 天"
-    - 总结："总共大概 Y 天左右"
+【发货+运输拆段规则——total_time 必须拆三段】
+10. 用户问 total_time（"发到XX多久""总共多久""多久能到"）时：
+    ⚠️ 前置条件：数据中同时有 ship_time 和 transit_time 时才拆三段：
+    - 发货段："发货大概 X 天"（用 ship_time.median_days 模糊化）
+    - 运输段："快递运到你那大概 Y 天"（用 transit_time.median_days 模糊化）
+    - 总计："总共约 Z 天"
+    如果数据只有 transit_time（没有 ship_time 字段），只答运输段，不拆段
 11. 用户只问发货时长（ship_time）→ 只答发货段，绝不脑补运输时长和总时长
 12. 发货天数模糊化（当天/一两天/三天左右/一周左右），禁止输出精确值
-13. 无 ship_time 数据时只讲运输段，严禁编造发货天数
+13. 无 ship_time 数据时只讲运输段，严禁编造发货天数。如果数据里只有 transit_time（没有 ship_time 字段），回答只说"快递运到你那大概 X 天"，禁止出现"发货"相关内容
 
 【承诺偏差】
 14. 有 avg_promise / avg_actual / ontime_rate 时补一句：
@@ -718,7 +725,12 @@ _CAPABILITY_PROMPT = f"""你是"懂履约的购物助手"，一个帮用户做�
 3. 对比价格——两家店哪个更划算、到手价差多少
 4. 推荐卖家——帮你找出某品类里口碑好的卖家
 
-语气自然亲切，像朋友推荐工具。可以带一两个提问示例。不要编造不存在的能力。
+语气自然亲切，像朋友推荐工具。可以带一两个提问示例。
+
+【硬约束——违反即失败】
+- 你只能处理用户用文字描述的信息。不能读也不能处理任何非文字内容，禁止提及"链接""截图""图片""聊天记录""详情页"等词（即使是说"不能"也不行，因为会误导用户以为有这些入口）
+- 你有且只有上述 4 项能力，禁止承诺任何其他能力（如"帮你下单""查物流轨迹""砍价""催发货"等）
+- 如果用户问"能不能读XX"，只说"你用文字告诉我就行"，不要列举你不能读的东西
 
 {SAFETY_RULES}"""
 
@@ -891,7 +903,7 @@ def generate_answer_v2(
    ✅ "推荐卖家 2059c39f（在 SP 州圣安德烈市），差评率低，评论量也不错"
    ❌ "帮你挑了几家靠谱的"（空话，没有具体信息）
 2. 数据依据模糊化，用"差评率低/评论量够多"等口语，禁止输出 neg_rate、n_reviews 等精确数值
-3. 用户给了收货地（buyer_state）→ 可以补充时效（"送到 XX 大概 Y 天"）
+3. 用户给了收货地（buyer_state）→ 必须补充时效：数据里有 median_days 时，必须说"送到 XX 大概 Y 天"（模糊化），禁止说"时效没法确认/暂不确定"；数据里没有时效字段时，才可说"时效暂不确定"
    用户没给收货地 → 绝对不编造时效（禁止说"3-5天""一周左右"等无依据数字）
 4. 卖家 ID 只显示前 8 位缩写（如 2059c39f），不要展示完整哈希
 5. 强调仅供参考，决定权交回用户
@@ -1033,6 +1045,16 @@ def chat(user_question: str, history=None):
         dim = intent.get("dimension")
         metric = intent.get("metric")
         label = f"{op}×{dim}×{metric}"
+
+        # unsupported → 引导回已有能力
+        if op == "unsupported":
+            guidance_map = {
+                ("category", "ship_time"): "发货是商家行为，不同品类没有统一发货规则哦。你可以告诉我某家店，我帮你查它的发货速度；或者我推荐发货快的卖家给你～",
+            }
+            hint = guidance_map.get((dim, metric), "这个我还不具备呢，但我可以帮你查时效、价格、卖家风险，或者推荐靠谱卖家～")
+            missing_hints.append(hint)
+            trace.append({"step": f"③查询·{label}", "content": "→ 引导回已有能力"})
+            continue
 
         # aggregate → 待实现
         if op in _PENDING_OPS:
@@ -1250,16 +1272,15 @@ def self_test():
         },
         {
             "q": "各品类发货速度排名",
-            "expect": "aggregate×category×ship_time",
-            "note": "品类发货排名（默认 asc，最快在前）",
-            "banned": ["最慢"],
+            "expect": "引导卖家维度",
+            "note": "ship_time 只支持 seller 维度，应引导回卖家",
+            "banned": [],
         },
         {
             "q": "哪些品类发货最慢",
-            "expect": "aggregate×category×ship_time",
-            "note": "品类发货最慢（desc，最慢在前）",
+            "expect": "引导卖家维度",
+            "note": "ship_time 只支持 seller 维度，应引导回卖家",
             "banned": [],
-            "must_contain": ["最慢"],
         },
         {
             "q": "哪些路线运费最贵",
@@ -1335,6 +1356,21 @@ def self_test():
             else:
                 print(f"⚠️  未引导补充卖家: {answer[:60]}")
                 all_pass = False
+
+        # ship_time 引导验收：不应返回 aggregate 数据，应引导回卖家维度
+        if tc["expect"] == "引导卖家维度":
+            intents_list = intent_result.get("intents", [])
+            has_agg_ship = any(
+                i.get("operation") == "aggregate" and i.get("metric") == "ship_time"
+                for i in intents_list
+            )
+            if has_agg_ship:
+                print("⚠️  仍识别为 aggregate×ship_time，未引导回卖家")
+                all_pass = False
+            elif "卖家" in answer or "商家" in answer or "店铺" in answer:
+                print("✅ 引导回卖家维度")
+            else:
+                print(f"ℹ️  回答: {answer[:80]}")
 
         # compare 验收：检查回答是否包含对比内容
         if "compare" in tc["expect"]:

@@ -100,7 +100,7 @@
 
 | metric \ dimension | seller 商家 | category 品类 | route 路线 |
 |---|---|---|---|
-| **ship_time** 发货 | ✅ `query_ship_time` | ✅ `query_category_ship_time` | — |
+| **ship_time** 发货 | ✅ `query_ship_time` | —（发货是商家行为，无品类维度） | — |
 | **transit_time** 运输 | ✅ 反查州→`query_timing` | ✅ 品类推断→`query_timing` | ✅ `query_timing` |
 | **total_time** 总时长 | ✅ 发货+运输组合 | ✅ 组合 | ✅ 组合 |
 | **freight** 运费 | ✅ `query_cost` | ✅ `query_freight_estimate` | ✅ `query_route_freight_single` |
@@ -331,7 +331,7 @@
 
 1. 三元组识别（操作 × 维度 × 指标）
 2. 四个操作：query / compare / aggregate / recommend
-3. 补数据：`route_freight`（路线运费）、`category_ship_time`（品类发货）、`category_freight`（品类运费）
+3. 补数据：`route_freight`（路线运费）、`category_freight`（品类运费）；`category_ship_time` 已废弃（发货是商家行为，品类是伪命题）
 4. 迁移对话类意图（capability / methodology / unsupported / other）与通用能力
 5. 语气人设（柔和、亲切、俏皮）
 6. 排序方向语义（ship_time 默认最快、freight/price 默认最贵）

@@ -47,17 +47,6 @@ def query_category_freight(top_n: int = 5, ascending: bool = False) -> list:
     return df.to_dict("records")
 
 
-def query_category_ship_time(top_n: int = 5, ascending: bool = True) -> list:
-    """
-    各品类发货时长排名。
-    ascending=True  → 最快（默认）；ascending=False → 最慢
-    返回: [{"category_en", "n", "median_days", "avg_days"}, ...]
-    """
-    df = _load_category_ship_time()
-    df = df.sort_values("median_days", ascending=ascending).head(top_n)
-    return df.to_dict("records")
-
-
 def query_route_freight_single(seller_state: str, buyer_state: str) -> Optional[dict]:
     """
     查询单条路线运费（精确匹配 seller_state + customer_state）。
@@ -86,10 +75,6 @@ if __name__ == "__main__":
     print("=== 品类运费 Top 5 最贵 ===")
     for r in query_category_freight(5, ascending=False):
         print(f"  {r['category_en']}: {r['avg_freight']:.1f} (n={r['n']})")
-
-    print("\n=== 品类发货 Top 5 最快 ===")
-    for r in query_category_ship_time(5, ascending=True):
-        print(f"  {r['category_en']}: {r['median_days']:.1f}天 (n={r['n']})")
 
     print("\n=== 路线运费 Top 5 最贵 ===")
     for r in query_route_freight(5, ascending=False):
