@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 运营后台 — 履约 AI 助手 V2.0
-5 大模块：指标看板 / 模型管理 / Eval 评测中心 / 坏例审核与干预 / Agent 管理
+5 大模块：指标看板 / 模型管理 / 测评管理 / Agent 管理 / （Eval 评测中心保留）
 """
 
 import streamlit as st
@@ -29,6 +29,8 @@ EVAL_LOG = os.path.join(LOG_DIR, "eval_results.jsonl")
 TOGGLES_FILE = os.path.join(LOG_DIR, "toggles.json")
 CASES_FILE = os.path.join(EVAL_DIR, "cases.jsonl")
 PROMPT_VERSIONS_FILE = os.path.join(LOG_DIR, "prompt_versions.jsonl")
+EVALUATIONS_LOG = os.path.join(LOG_DIR, "evaluations.jsonl")
+BUG_FEEDBACK_LOG = os.path.join(LOG_DIR, "bug_feedback.jsonl")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -131,7 +133,7 @@ PAGES = {
     "① 指标看板": "dashboard",
     "② 模型管理": "model",
     "③ Eval 评测中心": "eval",
-    "④ 坏例审核与干预": "review",
+    "④ 测评管理": "eval_mgmt",
     "⑤ Agent 管理": "agent",
 }
 
@@ -491,22 +493,138 @@ def page_eval():
 
 
 # ════════════════════════════════════════
-# 模块 ④ 坏例审核与干预
+# 模块 ④ 测评管理
 # ════════════════════════════════════════
-def page_review():
-    st.title("🔍 坏例审核与干预")
-    st.caption("审核对话坏例、管理干预开关")
+def page_eval_mgmt():
+    st.title("🧪 测评管理")
+    st.caption("Eval 中心 · 坏例闭环 · BUG 反馈")
 
-    tab_review, tab_toggles = st.tabs(["📝 坏例审核", "⚙️ 干预开关"])
+    tab_eval, tab_badcase, tab_bug = st.tabs(["📝 Eval 中心", "🚩 坏例闭环", "🐛 BUG 反馈"])
 
-    # ── 坏例审核 ──
-    with tab_review:
+    # ── Tab1: Eval 中心 ──
+    with tab_eval:
+        cases = load_jsonl(CASES_FILE)
+        evals = load_jsonl(EVAL_LOG)
+
+        # 概览
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("总用例数", len(cases))
+        with col2:
+            last_pass = f"{evals[-1].get('pass_rate', 0):.0%}" if evals else "—"
+            st.metric("最近通过率", last_pass)
+        with col3:
+            sections = Counter(c.get("section", "未分类") for c in cases)
+            st.metric("防复发用例", sections.get("防复发", 0))
+
+        st.markdown("---")
+
+        # 新增用例
+        with st.expander("➕ 新增用例"):
+            new_q = st.text_input("问题", key="new_case_q")
+            new_intent = st.text_input("期望意图", key="new_case_intent", placeholder="query×seller×ship_time")
+            new_section = st.selectbox("分类", ["防复发", "能力矩阵", "坏例审核"], key="new_case_section")
+            new_banned = st.text_input("禁词（逗号分隔）", key="new_case_banned")
+            new_required = st.text_input("必含词（逗号分隔）", key="new_case_required")
+
+            if st.button("✅ 添加用例", key="add_case"):
+                if new_q and new_intent:
+                    new_case = {
+                        "section": new_section,
+                        "q": new_q,
+                        "expect_intent": new_intent,
+                        "banned_answer_contains_intent": True,
+                    }
+                    if new_banned:
+                        new_case["banned_words"] = [w.strip() for w in new_banned.split(",") if w.strip()]
+                    if new_required:
+                        new_case["required_words"] = [w.strip() for w in new_required.split(",") if w.strip()]
+                    with open(CASES_FILE, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(new_case, ensure_ascii=False) + "\n")
+                    st.success("✅ 用例已添加")
+                    st.rerun()
+
+        # 用例列表（可编辑/删除）
+        st.subheader(f"📋 用例列表（{len(cases)} 条）")
+        for i, case in enumerate(cases):
+            section = case.get("section", "")
+            q = case.get("q", "")
+            intent = case.get("expect_intent", "")
+            col_a, col_b, col_c = st.columns([4, 1, 1])
+            with col_a:
+                with st.expander(f"#{i+1} [{section}] {q[:50]}"):
+                    st.json(case)
+            with col_b:
+                if st.button("✏️", key=f"edit_case_{i}"):
+                    st.session_state[f"editing_case_{i}"] = True
+            with col_c:
+                if st.button("🗑️", key=f"del_case_{i}"):
+                    cases.pop(i)
+                    save_jsonl(CASES_FILE, cases)
+                    st.rerun()
+
+            # 编辑模式
+            if st.session_state.get(f"editing_case_{i}", False):
+                with st.form(f"edit_form_{i}"):
+                    edit_q = st.text_input("问题", value=case.get("q", ""))
+                    edit_intent = st.text_input("期望意图", value=case.get("expect_intent", ""))
+                    edit_section = st.text_input("分类", value=case.get("section", ""))
+                    edit_banned = st.text_input("禁词", value=",".join(case.get("banned_words", [])))
+                    edit_required = st.text_input("必含词", value=",".join(case.get("required_words", [])))
+                    col_save, col_cancel = st.columns(2)
+                    with col_save:
+                        if st.form_submit_button("💾 保存"):
+                            cases[i]["q"] = edit_q
+                            cases[i]["expect_intent"] = edit_intent
+                            cases[i]["section"] = edit_section
+                            if edit_banned:
+                                cases[i]["banned_words"] = [w.strip() for w in edit_banned.split(",")]
+                            if edit_required:
+                                cases[i]["required_words"] = [w.strip() for w in edit_required.split(",")]
+                            save_jsonl(CASES_FILE, cases)
+                            st.session_state[f"editing_case_{i}"] = False
+                            st.rerun()
+                    with col_cancel:
+                        if st.form_submit_button("取消"):
+                            st.session_state[f"editing_case_{i}"] = False
+                            st.rerun()
+
+        # 运行 Eval
+        st.markdown("---")
+        if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
+            with st.spinner("正在运行 Eval（预计 1~2 分钟）..."):
+                eval_script = os.path.join(EVAL_DIR, "eval.py")
+                result = subprocess.run(
+                    [sys.executable, eval_script],
+                    capture_output=True, text=True, cwd=BASE_DIR, timeout=180,
+                )
+            if result.returncode == 0:
+                output = result.stdout
+                st.success("✅ Eval 完成！")
+                st.code(output, language=None)
+                # 提取通过率
+                pass_rate = 0.0
+                for line in output.split("\n"):
+                    if "通过率" in line:
+                        m = re.search(r"(\d+(?:\.\d+)?)%", line)
+                        if m:
+                            pass_rate = float(m.group(1)) / 100
+                eval_entry = {"ts": datetime.now().isoformat(), "total": len(cases), "pass_rate": pass_rate, "output": output[-500:]}
+                evals.append(eval_entry)
+                save_jsonl(EVAL_LOG, evals)
+            else:
+                st.error("❌ Eval 运行失败")
+                st.code(result.stderr, language=None)
+
+    # ── Tab2: 坏例闭环 ──
+    with tab_badcase:
         convs = load_jsonl(CONV_LOG)
+        evaluations = load_jsonl(EVALUATIONS_LOG)
 
         if not convs:
             st.info("暂无对话记录。使用助手产生对话后，这里会显示最近的对话。")
         else:
-            st.caption(f"共 {len(convs)} 条对话记录，勾选「标记为坏例」可将其追加到 Eval 题库")
+            st.caption(f"共 {len(convs)} 条对话记录。标记坏例会同时生成 Eval 用例 + BUG 反馈单。")
 
             display = convs[-50:]
             start_idx = len(convs) - len(display)
@@ -522,9 +640,21 @@ def page_review():
                     st.markdown(f"**意图：** `{intent}`")
                     st.markdown(f"**回答：** {answer}")
 
+                    # 关联评审记录
+                    matched_eval = None
+                    for ev in evaluations:
+                        if ev.get("question", "") == q:
+                            matched_eval = ev
+                            break
+                    if matched_eval:
+                        fw = matched_eval.get("framework", {})
+                        mj = matched_eval.get("model_judge", {})
+                        st.markdown(f"**评审：** 框架 {'✅' if fw.get('pass') else '❌'} | 裁判评分 **{mj.get('overall', '?')}**/10 — {mj.get('comment', '')}")
+
                     col_a, col_b = st.columns([1, 3])
                     with col_a:
                         if st.button("🚩 标记为坏例", key=f"bad_{idx}"):
+                            # 1. 生成 Eval 用例
                             bad_case = {
                                 "section": "坏例审核",
                                 "q": q,
@@ -534,7 +664,20 @@ def page_review():
                             }
                             with open(CASES_FILE, "a", encoding="utf-8") as f:
                                 f.write(json.dumps(bad_case, ensure_ascii=False) + "\n")
-                            st.success(f"已追加到 cases.jsonl（#{idx+1}）")
+
+                            # 2. 生成 BUG 反馈单
+                            bug_entry = {
+                                "ts": datetime.now().isoformat(),
+                                "question": q,
+                                "intent": intent,
+                                "answer": conv.get("answer", "")[:500],
+                                "status": "待修复",
+                                "note": f"从对话日志标记 @ {ts}",
+                            }
+                            with open(BUG_FEEDBACK_LOG, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(bug_entry, ensure_ascii=False) + "\n")
+
+                            st.success(f"✅ 已追加到 cases.jsonl + bug_feedback.jsonl")
 
                     with col_b:
                         if st.button("🗑️ 删除该条", key=f"del_{idx}"):
@@ -542,69 +685,50 @@ def page_review():
                             save_jsonl(CONV_LOG, convs)
                             st.rerun()
 
-    # ── 干预开关 ──
-    with tab_toggles:
-        st.caption("控制各 metric 组合是否启用。关闭后该组合将返回「暂不支持」")
+    # ── Tab3: BUG 反馈 ──
+    with tab_bug:
+        bugs = load_jsonl(BUG_FEEDBACK_LOG)
 
-        toggles = load_toggles()
+        if not bugs:
+            st.info("暂无 BUG 反馈。在「坏例闭环」中标记坏例后，会自动生成 BUG 反馈单。")
+        else:
+            # 统计
+            pending = sum(1 for b in bugs if b.get("status") == "待修复")
+            fixed = sum(1 for b in bugs if b.get("status") == "已修复")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("总反馈", len(bugs))
+            with col2:
+                st.metric("待修复", pending)
+            with col3:
+                st.metric("已修复", fixed)
 
-        METRICS = [
-            ("query", "seller", "ship_time"),
-            ("query", "seller", "transit_time"),
-            ("query", "seller", "total_time"),
-            ("query", "seller", "freight"),
-            ("query", "seller", "price"),
-            ("query", "seller", "neg_rate"),
-            ("query", "seller", "ontime_rate"),
-            ("query", "seller", "promise_gap"),
-            ("query", "route", "ship_time"),
-            ("query", "route", "transit_time"),
-            ("query", "route", "total_time"),
-            ("query", "route", "freight"),
-            ("query", "route", "price"),
-            ("compare", "seller", "ship_time"),
-            ("compare", "seller", "transit_time"),
-            ("compare", "seller", "total_time"),
-            ("compare", "seller", "freight"),
-            ("compare", "seller", "price"),
-            ("compare", "seller", "neg_rate"),
-            ("compare", "seller", "ontime_rate"),
-            ("compare", "seller", "promise_gap"),
-            ("aggregate", "category", "freight"),
-            ("aggregate", "category", "price"),
-            ("aggregate", "category", "neg_rate"),
-            ("aggregate", "category", "ontime_rate"),
-            ("aggregate", "category", "promise_gap"),
-            ("recommend", "category", "neg_rate"),
-        ]
-
-        groups = {}
-        for op, dim, metric in METRICS:
-            key = f"{op}×{dim}"
-            groups.setdefault(key, []).append(metric)
-
-        changed = False
-        for group_key, metrics in sorted(groups.items()):
-            st.markdown(f"**{group_key}**")
-            cols = st.columns(min(len(metrics), 4))
-            for j, metric in enumerate(metrics):
-                toggle_key = f"{group_key}×{metric}"
-                current = toggles.get(toggle_key, True)
-                with cols[j % 4]:
-                    new_val = st.toggle(
-                        f"{metric}",
-                        value=current,
-                        key=f"toggle_{toggle_key}",
-                    )
-                    if new_val != current:
-                        toggles[toggle_key] = new_val
-                        changed = True
             st.markdown("---")
 
-        if changed:
-            save_toggles(toggles)
-            st.success("开关已保存")
-            st.rerun()
+            # 筛选
+            filter_status = st.selectbox("筛选状态", ["全部", "待修复", "已修复"], key="bug_filter")
+            filtered = bugs if filter_status == "全部" else [b for b in bugs if b.get("status") == filter_status]
+
+            for i, bug in enumerate(filtered):
+                ts = bug.get("ts", "")[:19].replace("T", " ")
+                q = bug.get("question", "")
+                status = bug.get("status", "待修复")
+                icon = "🔴" if status == "待修复" else "🟢"
+
+                with st.expander(f"{icon} [{ts}] {q[:60]}"):
+                    st.markdown(f"**问题：** {q}")
+                    st.markdown(f"**意图：** `{bug.get('intent', '')}`")
+                    st.markdown(f"**回答：** {bug.get('answer', '')[:200]}")
+                    st.markdown(f"**状态：** {status}")
+
+                    if status == "待修复":
+                        # 找到在原始列表中的索引
+                        real_idx = bugs.index(bug)
+                        if st.button("✅ 标记已修复", key=f"fix_{real_idx}"):
+                            bugs[real_idx]["status"] = "已修复"
+                            bugs[real_idx]["fixed_at"] = datetime.now().isoformat()
+                            save_jsonl(BUG_FEEDBACK_LOG, bugs)
+                            st.rerun()
 
 
 # ════════════════════════════════════════
@@ -886,7 +1010,7 @@ elif page == "② 模型管理":
     page_model()
 elif page == "③ Eval 评测中心":
     page_eval()
-elif page == "④ 坏例审核与干预":
-    page_review()
+elif page == "④ 测评管理":
+    page_eval_mgmt()
 elif page == "⑤ Agent 管理":
     page_agent()

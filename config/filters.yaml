@@ -1,18 +1,3 @@
-# 干预开关配置 — 履约 AI 助手 V2.0
-# Agent 启动时读取，后台修改后 Agent 下次对话生效
-# 热重载：reload_config() 会同时重载此文件
-
-# 禁用的三元组组合（格式：operation×dimension×metric）
 disabled_combinations: []
-  # 例: "compare×seller×price"
-  # 例: "aggregate×category×freight"
-
-# 禁用的收货州（巴西 2 字母大写）
 disabled_states: []
-  # 例: "AC"  # 阿克雷州
-  # 例: "AP"  # 阿马帕州
-
-# 禁用的品类
 disabled_categories: []
-  # 例: "二手商品"
-  # 例: "成人用品"

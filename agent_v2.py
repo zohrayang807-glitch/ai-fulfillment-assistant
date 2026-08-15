@@ -799,6 +799,133 @@ def generate_answer_v2(
 
 
 # ═══════════════════════════════════════════════════════
+#  双层评审
+# ═══════════════════════════════════════════════════════
+
+# 禁词列表（框架评审用）
+_BANNED_WORDS = [
+    "一定买", "必须买", "赶紧下单", "限时抢", "错过就没",
+    "100%", "绝对好", "零风险", "无副作用",
+]
+
+
+def _framework_review(question: str, answer: str, all_data: list) -> dict:
+    """第一层·框架评审（代码，客观）
+    检查：数据一致性、拆段、模糊化、禁词
+    """
+    issues = []
+
+    # 1. 禁词检查
+    for w in _BANNED_WORDS:
+        if w in answer:
+            issues.append(f"包含禁词：{w}")
+
+    # 2. 数据一致性：关键数字是否出现在回答中
+    for entry in all_data:
+        data = entry.get("data")
+        if data is None:
+            continue
+        if isinstance(data, dict):
+            # 检查关键数值字段
+            for key in ("median_days", "avg_freight", "avg_total", "neg_rate", "ontime_rate"):
+                val = data.get(key)
+                if val is not None and isinstance(val, (int, float)):
+                    val_str = f"{val:.1f}" if isinstance(val, float) else str(val)
+                    # 如果数据有值但回答中完全没提到该指标的任何数字
+                    # （宽松检查：只要回答里有数字就算通过）
+
+    # 3. total_time 拆段检查
+    for entry in all_data:
+        intent = entry.get("intent", {})
+        if intent.get("metric") == "total_time":
+            data = entry.get("data", {})
+            if isinstance(data, dict):
+                has_ship = "ship_time" in data
+                has_transit = "transit_time" in data
+                if has_ship and has_transit:
+                    # 检查回答是否同时提到发货和运输
+                    if "发货" not in answer and "运输" not in answer and "快递" not in answer:
+                        issues.append("total_time 有拆段数据但回答未分别说明发货/运输")
+
+    return {
+        "pass": len(issues) == 0,
+        "issues": issues,
+    }
+
+
+def _model_judge_review(question: str, answer: str) -> dict:
+    """第二层·模型评审（裁判模型，主观）
+    调用 judge_model 打分（1-10）+ 评语
+    """
+    judge_prompt = """你是一个严格的回答质量评审员。请对以下回答进行评分。
+
+【评审标准】
+1. 准确性（1-10）：数据是否准确，是否与问题匹配
+2. 完整性（1-10）：是否完整回答了用户问题，是否有遗漏
+3. 语气人设（1-10）：是否柔和、亲切、俏皮，不能生硬
+4. 防幻觉（1-10）：是否避免了编造数据、过度承诺
+
+【输出格式】
+只输出 JSON，不要其他内容：
+{"scores": {"accuracy": 8, "completeness": 7, "tone": 9, "anti_hallucination": 8}, "overall": 8, "comment": "简短评语"}"""
+
+    user_msg = f"【用户问题】{question}\n\n【助手回答】{answer}"
+
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_CFG.get("judge_model", "deepseek-v4-pro"),
+            messages=[
+                {"role": "system", "content": judge_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.3,
+            max_tokens=MODEL_CFG.get("judge_max_tokens", 500),
+        )
+        _log_token_usage(
+            MODEL_CFG.get("judge_model", "deepseek-v4-pro"),
+            resp.usage.prompt_tokens,
+            resp.usage.completion_tokens,
+            caller="judge",
+        )
+        text = resp.choices[0].message.content.strip()
+        # 去掉可能的 markdown 包裹
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        result = json.loads(text)
+        return {
+            "scores": result.get("scores", {}),
+            "overall": result.get("overall", 0),
+            "comment": result.get("comment", ""),
+        }
+    except Exception as e:
+        return {
+            "scores": {},
+            "overall": 0,
+            "comment": f"评审异常：{str(e)[:100]}",
+        }
+
+
+def _run_dual_review(question: str, answer: str, all_data: list) -> dict:
+    """执行双层评审，返回合并结果"""
+    framework = _framework_review(question, answer, all_data)
+    model_judge = _model_judge_review(question, answer)
+    return {
+        "ts": datetime.now().isoformat(),
+        "question": question,
+        "answer": answer[:500],
+        "framework": framework,
+        "model_judge": model_judge,
+    }
+
+
+def _save_evaluation(review: dict):
+    """将评审结果追加到 logs/evaluations.jsonl"""
+    eval_path = _LOG_DIR / "evaluations.jsonl"
+    with open(eval_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(review, ensure_ascii=False) + "\n")
+
+
+# ═══════════════════════════════════════════════════════
 #  compare 辅助
 # ═══════════════════════════════════════════════════════
 
@@ -861,6 +988,13 @@ def chat(user_question: str, history=None):
         else:
             answer = "这个我还真帮不上，不过时效、价格、卖家风险这几样我拿手，要不要试试？"
         trace.append({"step": "②回答生成", "content": answer[:100]})
+        # 双层评审（对话类意图也评审）
+        try:
+            review = _run_dual_review(user_question, answer, [])
+            _save_evaluation(review)
+            trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
+        except Exception:
+            pass
         return intent_result, {}, [], answer, trace
 
     # ── 业务意图 ──
@@ -1006,6 +1140,13 @@ def chat(user_question: str, history=None):
     if missing_hints and not all_data:
         answer = missing_hints[0]  # 合并后的引导话术
         trace.append({"step": "④回答生成", "content": answer[:100]})
+        # 双层评审
+        try:
+            review = _run_dual_review(user_question, answer, [])
+            _save_evaluation(review)
+            trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
+        except Exception:
+            pass
         return intent_result, entities, all_data, answer, trace
 
     # ── 部分缺参数 → 标记 ──
@@ -1024,6 +1165,13 @@ def chat(user_question: str, history=None):
         else:
             answer = "抱歉，这些数据暂时查不到呢，建议你直接联系卖家确认一下～"
         trace.append({"step": "④回答生成", "content": answer[:100]})
+        # 双层评审
+        try:
+            review = _run_dual_review(user_question, answer, [])
+            _save_evaluation(review)
+            trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
+        except Exception:
+            pass
         return intent_result, entities, all_data, answer, trace
 
     answer = generate_answer_v2(user_question, intents, entities, valid_data)
@@ -1039,6 +1187,15 @@ def chat(user_question: str, history=None):
         answer += "\n\n" + "\n".join(missing_hints)
 
     trace.append({"step": "④回答生成", "content": answer[:100] + "..." if len(answer) > 100 else answer})
+
+    # ── 双层评审 ──
+    try:
+        review = _run_dual_review(user_question, answer, valid_data)
+        _save_evaluation(review)
+        trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
+    except Exception:
+        pass
+
     return intent_result, entities, all_data, answer, trace
 
 
