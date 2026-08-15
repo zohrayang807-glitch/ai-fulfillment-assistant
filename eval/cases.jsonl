@@ -1,9 +1,9 @@
 {"id": 1, "section": "防复发", "q": "MS送到SP运费大概多少", "expected_intents": ["query×route×freight"]}
-{"id": 2, "section": "防复发", "q": "我想买书，推荐个商家", "expected_intents": ["recommend×category×neg_rate"], "banned": ["帮你挑了几家"]}
+{"id": 2, "section": "防复发", "q": "我想买书，推荐个商家", "expected_intents": ["recommend×category×neg_rate"], "banned": ["建议你直接问卖家", "口碑都不错，你可以"], "required": ["卖家"]}
 {"id": 3, "section": "防复发", "turns": ["推荐个卖书架的商家", "我在MS州"], "expected_intents": ["recommend×category×neg_rate"], "banned": ["没有时效数据"], "required_any": ["天", "半个月"]}
 {"id": 4, "section": "防复发", "q": "b1a812 和 5058e8 和 282f23 哪家便宜，送到RN，书架", "expected_intents": ["compare×seller×price"]}
 {"id": 5, "section": "防复发", "turns": ["推荐个卖书架的商家", "我在MS州"], "expected_intents": ["recommend×category×neg_rate"], "banned_answer_contains_intent": ["query"]}
-{"id": 6, "section": "防复发", "q": "你会阅读上下文么", "expected_intents": ["capability"], "banned": ["链接", "截图", "图片", "聊天记录"]}
+{"id": 6, "section": "防复发", "q": "你会阅读上下文么", "expected_intents": ["capability"], "banned": ["发给我链接", "把链接发给我", "发截图给我"], "required": ["文字"]}
 {"id": 7, "section": "防复发", "q": "b1a812 多久能发货", "expected_intents": ["query×seller×ship_time"], "banned": ["运输", "总共"]}
 {"id": 8, "section": "防复发", "q": "买书架送到 SP 要多久", "expected_intents": ["query×route×transit_time"], "banned": ["清关", "转运"]}
 {"id": 9, "section": "能力矩阵", "q": "b1a812 多久能发货", "expected_intents": ["query×seller×ship_time"]}

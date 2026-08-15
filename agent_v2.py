@@ -9,11 +9,106 @@
 import sys, os, json
 from typing import Optional
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
+import yaml
 
 # ── 加载环境变量 ──
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+# ── 配置目录 ──
+_CONFIG_DIR = Path(__file__).resolve().parent / "config"
+_LOG_DIR = Path(__file__).resolve().parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+
+
+def _load_prompts() -> dict:
+    """从 config/prompts.yaml 加载提示词，注入 SAFETY_RULES"""
+    with open(_CONFIG_DIR / "prompts.yaml", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    safety = raw["safety"]
+    prompts = {}
+    for key, val in raw.items():
+        if key == "safety":
+            prompts[key] = val
+        else:
+            prompts[key] = val.replace("{SAFETY_RULES}", safety)
+    return prompts
+
+
+def _load_model_config() -> dict:
+    """从 config/model.yaml 加载模型配置"""
+    with open(_CONFIG_DIR / "model.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _load_filters() -> dict:
+    """从 config/filters.yaml 加载干预开关配置"""
+    filters_path = _CONFIG_DIR / "filters.yaml"
+    if not filters_path.exists():
+        return {"disabled_combinations": [], "disabled_states": [], "disabled_categories": []}
+    with open(filters_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    # 确保三个 key 都存在
+    return {
+        "disabled_combinations": data.get("disabled_combinations", []),
+        "disabled_states": data.get("disabled_states", []),
+        "disabled_categories": data.get("disabled_categories", []),
+    }
+
+
+PROMPTS = _load_prompts()
+MODEL_CFG = _load_model_config()
+FILTERS = _load_filters()
+
+
+def reload_config():
+    """热重载配置（admin 保存后调用）"""
+    global PROMPTS, MODEL_CFG, FILTERS
+    PROMPTS = _load_prompts()
+    MODEL_CFG = _load_model_config()
+    FILTERS = _load_filters()
+
+
+def _check_filters(intent: dict, entities: dict) -> Optional[str]:
+    """检查意图是否命中过滤规则。返回拦截消息或 None。"""
+    op = intent.get("operation", "")
+    dim = intent.get("dimension", "")
+    metric = intent.get("metric", "")
+    combo = f"{op}×{dim}×{metric}"
+
+    # 1. 禁用组合
+    if combo in FILTERS.get("disabled_combinations", []):
+        return f"「{combo}」功能已暂停使用。你可以试试：查时效、查运费、对比卖家、推荐品类～"
+
+    # 2. 禁用州
+    buyer_state = (entities.get("buyer_state") or "").upper()
+    if buyer_state and buyer_state in FILTERS.get("disabled_states", []):
+        return f"收货州 {buyer_state} 暂不支持查询。你可以换个州试试，或者让我推荐其他地区的卖家～"
+
+    # 3. 禁用品类
+    category = entities.get("category")
+    if category and category in FILTERS.get("disabled_categories", []):
+        return f"品类「{category}」暂不支持查询。你可以试试其他品类，或者让我推荐靠谱卖家～"
+
+    return None
+
+
+def _log_token_usage(model: str, prompt_tokens: int, completion_tokens: int, caller: str = "unknown"):
+    """记录每次 API 调用的 token 用量"""
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "caller": caller,
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+    log_path = _LOG_DIR / "token_usage.jsonl"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
 
 # ── 初始化 DeepSeek 客户端 ──
 client = OpenAI(
@@ -83,100 +178,8 @@ VALID_STATES = {
 #  Step 1 · 三元组意图识别
 # ═══════════════════════════════════════════════════════
 
-INTENT_V2_PROMPT = """你是一个意图分类器。将用户问题解析为结构化三元组。
-
-【三元组结构：操作 × 维度 × 指标】
-
-操作（operation）——用户要"做什么"
-- query：查单个对象某个指标的参考值（"这家发货多久""咖啡运费一般多少""大概多少钱"）
-- compare：多个对象比较（"两家谁发货快"）
-- aggregate：某个维度下的分布/排名（"哪些品类运费最贵""各品类发货速度排名""运费排行"）
-- recommend：按品类推荐卖家（"买XX哪家靠谱""推荐个卖XX的"），dimension 固定为 category
-
-⚠️ query vs aggregate 区分：
-- "一般多少/平均多少/大概多少"→ query（查参考值），不是 aggregate
-- "排名/排行/最贵/最便宜/分布"→ aggregate（需要排序或分布）
-- 例："咖啡运费一般多少"→ query×category×freight；"哪些品类运费最贵"→ aggregate×category×freight
-
-⚠️ aggregate 排序方向（sort_direction）——按指标语义区分默认值：
-- ship_time / transit_time / total_time（时效类）："排名/排行"→ 默认 asc（最快在前）；"最慢"→ desc
-- freight / price（价格运费类）："排名/排行"→ 默认 desc（最贵在前）；"最便宜"→ asc
-- neg_rate（风险类）："排名/排行"→ 默认 desc（最差在前）
-- 用户明确说"最快/最慢/最贵/最便宜"时，以用户说法为准，覆盖上述默认值
-
-维度（dimension）——用户关心的"主体"
-- seller：商家
-- category：品类
-- route：路线（发货州→收货州）
-
-指标（metric）——用户要"什么信息"
-- ship_time：发货时长（下单→交给快递）
-- transit_time：运输时长（交给快递→送达）
-- total_time：总时长（发货+运输）
-- freight：运费
-- price：价格
-- neg_rate：差评率
-- ontime_rate：准时率
-- promise_gap：承诺偏差（平台承诺 vs 实际）
-
-⚠️ total_time vs transit_time 区分：
-- total_time 只在 seller 维度时使用（有发货段可拆，能同时查发货+运输）
-- route / category 维度只有运输数据（查不到发货段），所以"多久到/几天到"在无卖家时一律识别为 transit_time
-- 例："b1a812 多久能到"→ query×seller×total_time（有卖家，可拆段）
-- 例："买书架送到 SP 要多久"→ query×route×transit_time（无卖家，只有运输段）
-- 例："咖啡送到 RN 要几天"→ query×category×transit_time（无卖家，只有运输段）
-
-⚠️ ship_time（发货时长）只支持 seller 维度：
-- 发货是商家行为，品类不会发货，所以"category×ship_time"是伪命题
-- 用户问"哪类商品发货快/各品类发货速度排名/哪些品类发货慢"→ 识别为 unsupported（不支持的操作），不要识别为 aggregate×category×ship_time
-- route 维度同理：发货时长是卖家行为，不是路线属性
-
-【对话类意图（不查数据，单独处理）】
-- capability：自我介绍（"你是谁/能做什么"）
-- methodology：方法论（"你怎么判断/数据哪来的"）
-- unsupported：购物相关但未实现的功能（砍价、查物流轨迹、催发货）
-- other：与网购完全无关（天气、闲聊）
-
-【易混淆边界】
-1. 问"发货多久/几天才发货"→ metric=ship_time（注意：是发货段，不是运输段）
-2. 问"多久到/几天到/来得及吗"→ 无卖家时 metric=transit_time；有卖家时 metric=total_time
-2a. ⚠️ "发到XX多久/运到XX几天"是问运输段（transit_time），不是问总时长。只有明确说"总共多久/一共几天"才是 total_time
-3. 问"运费/物流费"→ metric=freight；问"价格/多少钱/到手价"→ metric=price
-4. 问"靠不靠谱/差评多不多"→ metric=neg_rate
-5. 问"准时吗/会不会迟到/承诺几天"→ metric=ontime_rate 或 promise_gap
-6. "买XX哪家靠谱"→ recommend；"这家卖家靠谱吗"→ query×seller×neg_rate
-7. 问"你是谁/能做什么"→ capability；问"你怎么判断"→ methodology
-8. 跟网购相关但没实现→ unsupported；完全无关→ other
-9. 问"谁快/谁便宜/谁靠谱/对比/比较/哪个更好"→ compare（即使只提到一个卖家也识别为 compare，系统会校验数量）
-10. "A 和 B 谁发货快"→ compare×seller×ship_time；"A 对比价格"→ compare×seller×price
-
-【多轮对话继承规则】
-当用户的话只是补充信息（如"我在MS州""SP""就书架吧""送到RN"），没有提出新的问题时，继承上一轮的三元组（operation×dimension×metric），只更新 entities 参数重新查询。
-- 例：上一轮 recommend → 用户说"我在MS州" → 仍为 recommend×category（带 buyer_state=MS），不要把补充信息识别成新的 query
-- 例：上一轮 query×seller×ship_time → 用户说"送到RN" → 仍为 query×seller×ship_time（补充 buyer_state）
-- 判断标准：用户没有问新的指标或操作，只是补充了收货地/品类/卖家等参数
-
-【输出格式】
-只输出 JSON。一句话可能涉及多个意图就输出多个三元组。对话类意图不进入三元组。
-
-业务意图格式：
-{{"intents": [{{"operation": "query", "dimension": "seller", "metric": "ship_time"}}],
-  "entities": {{"seller_ids": ["b1a812"], "category": null, "buyer_state": null, "seller_state": null}}}}
-
-对话类意图格式：
-{{"chat_intent": "capability"}}
-
-说明：
-- seller_ids：卖家ID前缀列表，用户提到几个填几个，没有则填空数组 []
-- category：商品品类英文名（映射到 Olist 品类，如 书→books_general_interest, 咖啡→food_drink, 书架→office_furniture, 手表→watches_gifts, 鞋→fashion_shoes, 床上用品→bed_bath_table）
-- buyer_state：收货州（巴西2字母大写，如 SP/RN/MG/RJ/PE）
-- seller_state：卖家发货州（用户明确提到时才填，否则 null）
-- sort_direction：aggregate 时的排序方向，"desc"（最贵/最慢，默认）或 "asc"（最便宜/最快）
-- dimension 为 route 时，buyer_state 必填（收货地）；seller_state 可由商家反查
-- dimension 为 seller 时，seller_ids 必须至少有一个
-- dimension 为 category 时，category 必须有值（aggregate 时可为空，返回全品类排名）
-
-{history_block}"""
+# INTENT_V2_PROMPT 已迁移到 config/prompts.yaml，通过 PROMPTS["intent"] 读取
+INTENT_V2_PROMPT = PROMPTS["intent"]  # 保留变量名供内部引用
 
 
 def classify_intent_v2(user_question: str, history=None) -> dict:
@@ -195,14 +198,15 @@ def classify_intent_v2(user_question: str, history=None) -> dict:
 
     prompt = INTENT_V2_PROMPT.format(history_block=history_block)
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=MODEL_CFG["model"],
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_question},
         ],
-        temperature=0,
-        max_tokens=400,
+        temperature=MODEL_CFG["temperature_intent"],
+        max_tokens=MODEL_CFG["max_tokens_intent"],
     )
+    _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller="intent")
     text = resp.choices[0].message.content.strip()
     # 去掉可能的 markdown 代码块包裹
     if text.startswith("```"):
@@ -654,186 +658,36 @@ def dispatch_query(intent: dict, entities: dict):
 #  Step 4 · 回答生成
 # ═══════════════════════════════════════════════════════
 
-SAFETY_RULES = """【安全约束——必须遵守】
-- 禁止替用户做最终购买决定，决定权交回用户
-- 禁止使用煽动性带货话术
-- 美妆/护肤/保健品：严禁承诺功效，仅解读公开成分，提示"效果因人而异"
-- 母婴用品：禁用"绝对安全、零风险"，提示关注 3C 认证、国标
-- 医疗器械：不能替代医嘱，仅做消费品参数对比，提示"遵从医嘱"
-- 食品/生鲜：不承诺口味，提醒生产日期、配料表、过敏风险
-- 二手商品：强调高风险和个体差异，不担保卖家"""
-
-
-ANSWER_V2_PROMPT = f"""你是懂履约的购物助手，语气柔和、亲切、带一点俏皮，像贴心的购物顾问。
-
-以下是查询到的结构化数据：
-
-{{data}}
-
-回答规则：
-1. 先给结论，用口语化表达，语气柔和亲切
-2. 数据依据必须模糊化：用"约/大概/左右/一成/大多数/不到一成"等
-   ✅ "这家店发货挺利索的，一般当天就交快递啦～"
-   ✅ "快递运到你那大概 18 天左右"
-   ✅ "运费大概 15 雷亚尔左右"
-   ❌ "n=332, P50=18天, P90=35天"
-   ❌ "均价 289.89+运费 13.57=303.47"
-3. 标注不确定性：样本少、非实时、推断的发货州
-4. 决定权交回用户（"如果你…可以…"）
-5. 适度使用语气词（"啦""哦""试试看"），但不油腻不卖萌
-
-【防幻觉铁律——违反即失败】
-6. 每个维度只基于提供的数据回答。数据为 null → 明确说"暂时查不到"，严禁编造
-7. 数字由数据层计算，LLM 不参与任何计算
-8. 只回答用户明确问的指标，不主动补充用户没问的维度。例如用户只问"多久发货"→ 只答发货时长，不得脑补"运输 X 天、总共 Y 天"；用户只问"运费"→ 只答运费，不加价格对比
-9. 禁止脑补数据之外的信息（如"清关""转运""分拣""派送"等数据里没有的环节），只基于提供的数据说话，不添加任何推测性描述
-
-【发货+运输拆段规则——total_time 必须拆三段】
-10. 用户问 total_time（"发到XX多久""总共多久""多久能到"）时：
-    ⚠️ 前置条件：数据中同时有 ship_time 和 transit_time 时才拆三段：
-    - 发货段："发货大概 X 天"（用 ship_time.median_days 模糊化）
-    - 运输段："快递运到你那大概 Y 天"（用 transit_time.median_days 模糊化）
-    - 总计："总共约 Z 天"
-    如果数据只有 transit_time（没有 ship_time 字段），只答运输段，不拆段
-11. 用户只问发货时长（ship_time）→ 只答发货段，绝不脑补运输时长和总时长
-12. 发货天数模糊化（当天/一两天/三天左右/一周左右），禁止输出精确值
-13. 无 ship_time 数据时只讲运输段，严禁编造发货天数。如果数据里只有 transit_time（没有 ship_time 字段），回答只说"快递运到你那大概 X 天"，禁止出现"发货"相关内容
-
-【承诺偏差】
-14. 有 avg_promise / avg_actual / ontime_rate 时补一句：
-    "平台承诺约 X 天，实际平均 Y 天，约 Z 成订单能按时到"
-15. 承诺信息是加分项不是必答项
-
-【风险指标】
-16. 有 neg_rate 时用口语表达："差评率约 3%，比同类平均还低一点，比较稳"
-17. 有 cross_category 时概括最好和最差品类
-18. 有 review_reasons 时用自然语言概括差评原因
-
-【价格/运费】
-19. 价格/运费数字模糊化（"大概 X 左右""约 Y"），禁止精确到小数
-20. 有 freight_estimate 时提及不确定性（"受重量、距离影响"）
-
-{SAFETY_RULES}"""
-
-
-# ── 对话类意图 prompt ──
-_CAPABILITY_PROMPT = f"""你是"懂履约的购物助手"，一个帮用户做网购下单前决策的 AI。
-
-用户问你是什么/能做什么。请口语化介绍你能帮用户做的几件事：
-1. 判断时效——某件商品送到用户那里大概要多久
-2. 识别卖家风险——这家店退货靠不靠谱、差评率高不高
-3. 对比价格——两家店哪个更划算、到手价差多少
-4. 推荐卖家——帮你找出某品类里口碑好的卖家
-
-语气自然亲切，像朋友推荐工具。可以带一两个提问示例。
-
-【硬约束——违反即失败】
-- 你只能处理用户用文字描述的信息。不能读也不能处理任何非文字内容，禁止提及"链接""截图""图片""聊天记录""详情页"等词（即使是说"不能"也不行，因为会误导用户以为有这些入口）
-- 你有且只有上述 4 项能力，禁止承诺任何其他能力（如"帮你下单""查物流轨迹""砍价""催发货"等）
-- 如果用户问"能不能读XX"，只说"你用文字告诉我就行"，不要列举你不能读的东西
-
-{SAFETY_RULES}"""
-
-_METHODOLOGY_PROMPT = f"""你是"懂履约的购物助手"。用户在问你的判断方法/数据来源。
-
-请用口语解释：
-- 模糊表述，禁止出现 P50、P90、n=、样本数、中位数、精确百分比等内部指标
-- 用"参考历史订单里大多数人的实际收货时间""跟同类目其他卖家的平均线比"这类自然语言
-- 说明"数字是从真实订单数据里查出来的，不是我编的"
-- 说明数据是离线快照不是实时的，会标注不确定性
-- 语气自然亲切
-
-{SAFETY_RULES}"""
-
-_UNSUPPORTED_PROMPT = f"""你是"懂履约的购物助手"。用户想要你做一个你目前做不到的事。
-
-你有且只有以下几件能力：
-1. 配送时效——某件商品送到用户那里大概要多久
-2. 卖家风险——这家店差评率高不高、退货靠不靠谱
-3. 到手价格对比——两家店哪个更划算、含运费到手价差多少
-4. 卖家推荐——帮你找出某品类里口碑好的卖家
-
-温和说明"目前还不具备这个功能"，引导回现有能力。引导时只能提上述几件。
-语气软化，像朋友说"这个我还不会，但我可以帮你看看别的"。
-
-{SAFETY_RULES}"""
-
-_OTHER_PROMPT = f"""你是"懂履约的购物助手"，但用户在问和网购无关的事。
-
-要求：
-- 直接陪用户聊，自然回答，不要拒绝、不要跳回购物话题
-- 保持温和亲切的语气
-- 如果话题敏感（医疗/法律），提醒用户咨询专业人士
-
-{SAFETY_RULES}"""
-
-COMPARE_ANSWER_PROMPT = f"""你是懂履约的购物助手，语气柔和、亲切、带一点俏皮。
-
-以下是多个卖家的对比数据：
-
-{{data}}
-
-回答规则：
-1. 先给结论：谁更好/更快/更便宜，一句话概括
-2. 对比说明，不是逐个罗列。例如"b1a812 发货快（一般当天），5058e8 偏慢（要拖两周），b1a812 明显更快"
-3. 数据依据必须模糊化：用"约/大概/左右/一两天/拖两周"等
-   ❌ "n=332, median_days=2.85"
-   ✅ "发货大概要等两三天"
-4. 查不到数据的卖家诚实说明"这家暂时没有相关数据"
-5. 只基于查询结果对比，绝不编造
-6. 决定权交回用户（"如果你…可以…"）
-7. 适度使用语气词，保持亲切
-8. 只答用户问的指标，不主动补充其他维度
-
-{SAFETY_RULES}"""
-
-AGGREGATE_ANSWER_PROMPT = f"""你是懂履约的购物助手，语气柔和、亲切、带一点俏皮。
-
-以下是聚合排名数据：
-
-{{data}}
-
-回答规则：
-1. 以"排行榜"形式回答，先给排名结论
-2. 数据依据必须模糊化：用"约/大概/左右"
-   ❌ "avg_freight=49.58, n=176"
-   ✅ "运费大概 50 雷亚尔左右"
-3. 品类名翻译成中文（如 office_furniture→办公家具、food_drink→食品饮料、fashion_shoes→时尚鞋靴）
-4. 路线格式："XX 州→YY 州"
-5. 只基于查询结果，不编造未查到的品类/路线
-6. 如果有样本量信息，可提一句"样本较多，数据比较靠谱"
-7. 决定权交回用户（"如果你想看更多排名…""如果你想知道某个品类的详情…"）
-8. 适度使用语气词，保持亲切
-
-【排序方向一致性——违反即失败】
-9. 数据是按升序排列（值小的在前）→ 用"最快/最便宜/最短"描述
-10. 数据是按降序排列（值大在前）→ 用"最慢/最贵/最长"描述
-11. 排行榜标题必须和实际排序方向一致：
-    - 数据排了最慢的在前 → 说"发货最慢的品类是…"，不能说"最快的"
-    - 数据排了最贵的在前 → 说"运费最贵的品类是…"
-12. 判断方向的方法：看数据中第一个条目的指标值是大还是小。值大→降序（最X），值小→升序（最Y）
-
-{SAFETY_RULES}"""
+# SAFETY_RULES 及所有 prompt 已迁移到 config/prompts.yaml，通过 PROMPTS[...] 读取
+SAFETY_RULES = PROMPTS["safety"]
+ANSWER_V2_PROMPT = PROMPTS["answer"]
+_CAPABILITY_PROMPT = PROMPTS["capability"]
+_METHODOLOGY_PROMPT = PROMPTS["methodology"]
+_UNSUPPORTED_PROMPT = PROMPTS["unsupported"]
+_OTHER_PROMPT = PROMPTS["other"]
+COMPARE_ANSWER_PROMPT = PROMPTS["compare_answer"]
+AGGREGATE_ANSWER_PROMPT = PROMPTS["aggregate_answer"]
 
 _CHAT_PROMPTS = {
-    "capability": _CAPABILITY_PROMPT,
-    "methodology": _METHODOLOGY_PROMPT,
-    "unsupported": _UNSUPPORTED_PROMPT,
-    "other": _OTHER_PROMPT,
+    "capability": PROMPTS["capability"],
+    "methodology": PROMPTS["methodology"],
+    "unsupported": PROMPTS["unsupported"],
+    "other": PROMPTS["other"],
 }
 
 
-def _llm_generate(system_prompt: str, user_question: str) -> str:
+def _llm_generate(system_prompt: str, user_question: str, caller: str = "chat") -> str:
     """通用 LLM 生成"""
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=MODEL_CFG["model"],
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_question},
         ],
-        temperature=0.7,
-        max_tokens=500,
+        temperature=MODEL_CFG["temperature_answer"],
+        max_tokens=MODEL_CFG["max_tokens_answer"],
     )
+    _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller=caller)
     return resp.choices[0].message.content.strip()
 
 
@@ -866,60 +720,48 @@ def generate_answer_v2(
         if entry.get("compare"):
             prompt = COMPARE_ANSWER_PROMPT.format(data=data_str)
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model=MODEL_CFG["model"],
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_question},
                 ],
-                temperature=0.7,
-                max_tokens=500,
+                temperature=MODEL_CFG["temperature_answer"],
+                max_tokens=MODEL_CFG["max_tokens_answer"],
             )
+            _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller="compare_answer")
             return resp.choices[0].message.content.strip()
 
         # aggregate 数据 → 用排名专用 prompt
         if entry.get("aggregate"):
             prompt = AGGREGATE_ANSWER_PROMPT.format(data=data_str)
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model=MODEL_CFG["model"],
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_question},
                 ],
-                temperature=0.7,
-                max_tokens=500,
+                temperature=MODEL_CFG["temperature_answer"],
+                max_tokens=MODEL_CFG["max_tokens_answer"],
             )
+            _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller="aggregate_answer")
             return resp.choices[0].message.content.strip()
 
         prompt = ANSWER_V2_PROMPT.format(data=data_str)
 
         # recommend 返回 list → 特殊处理
         if isinstance(data, list):
-            prompt = f"""你是懂履约的购物助手。以下是推荐数据：
-
-{data_str}
-
-回答规则：
-1. 必须逐一列出具体卖家，每家说清楚：卖家ID缩写、所在城市/州、口碑好在哪里
-   ✅ "推荐卖家 2059c39f（在 SP 州圣安德烈市），差评率低，评论量也不错"
-   ❌ "帮你挑了几家靠谱的"（空话，没有具体信息）
-2. 数据依据模糊化，用"差评率低/评论量够多"等口语，禁止输出 neg_rate、n_reviews 等精确数值
-3. 用户给了收货地（buyer_state）→ 必须补充时效：数据里有 median_days 时，必须说"送到 XX 大概 Y 天"（模糊化），禁止说"时效没法确认/暂不确定"；数据里没有时效字段时，才可说"时效暂不确定"
-   用户没给收货地 → 绝对不编造时效（禁止说"3-5天""一周左右"等无依据数字）
-4. 卖家 ID 只显示前 8 位缩写（如 2059c39f），不要展示完整哈希
-5. 强调仅供参考，决定权交回用户
-6. 语气自然亲切，像朋友帮你挑店
-
-{SAFETY_RULES}"""
+            prompt = PROMPTS["recommend_answer"].format(data=data_str)
 
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=MODEL_CFG["model"],
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_question},
             ],
-            temperature=0.7,
-            max_tokens=500,
+            temperature=MODEL_CFG["temperature_answer"],
+            max_tokens=MODEL_CFG["max_tokens_answer"],
         )
+        _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller="answer")
         return resp.choices[0].message.content.strip()
 
     # ── 多意图 → 聚合数据后统一回答 ──
@@ -944,14 +786,15 @@ def generate_answer_v2(
     prompt = ANSWER_V2_PROMPT.format(data=data_str)
 
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=MODEL_CFG["model"],
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_question},
         ],
-        temperature=0.7,
-        max_tokens=600,
+        temperature=MODEL_CFG["temperature_answer"],
+        max_tokens=MODEL_CFG["max_tokens_multi_answer"],
     )
+    _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller="multi_answer")
     return resp.choices[0].message.content.strip()
 
 
@@ -1002,6 +845,7 @@ def chat(user_question: str, history=None):
 
     返回: (intent_result, entities, all_data, answer, trace)
     """
+    reload_config()  # 每次对话重新加载配置（支持热更新）
     trace = []
 
     # ── Step 1: 三元组意图识别 ──
@@ -1013,7 +857,7 @@ def chat(user_question: str, history=None):
         chat_type = intent_result["chat_intent"]
         prompt = _CHAT_PROMPTS.get(chat_type)
         if prompt:
-            answer = _llm_generate(prompt, user_question)
+            answer = _llm_generate(prompt, user_question, caller=chat_type)
         else:
             answer = "这个我还真帮不上，不过时效、价格、卖家风险这几样我拿手，要不要试试？"
         trace.append({"step": "②回答生成", "content": answer[:100]})
@@ -1041,6 +885,13 @@ def chat(user_question: str, history=None):
     missing_hints = []
 
     for intent in intents:
+        # ── 干预过滤：命中禁用规则则跳过 ──
+        filter_msg = _check_filters(intent, entities)
+        if filter_msg:
+            missing_hints.append(filter_msg)
+            label = f"{intent.get('operation')}×{intent.get('dimension')}×{intent.get('metric')}"
+            trace.append({"step": f"③查询·{label}", "content": "🚫 命中过滤规则"})
+            continue
         op = intent.get("operation", "query")
         dim = intent.get("dimension")
         metric = intent.get("metric")

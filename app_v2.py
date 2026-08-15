@@ -7,10 +7,16 @@
 import streamlit as st
 import json
 import time
+import os
+from datetime import datetime
 
 from agent_v2 import chat
 
-st.set_page_config(page_title="懂履约的 AI 购物助手 V2.0", layout="wide")
+st.set_page_config(page_title="懂履约的 AI 购物助手 V2.0", layout="wide", initial_sidebar_state="collapsed")
+
+# 确保 logs 目录存在
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # ── 全局样式（和 V1 保持一致）──
 st.markdown("""
@@ -175,6 +181,27 @@ if submitted and user_input.strip():
         time.sleep(0.5)
         intent_result, entities, all_data, answer, trace = chat(user_input.strip(), history or None)
 
+    # ── 写对话日志 ──
+    # 提取意图字符串
+    if "chat_intent" in intent_result:
+        intent_str = f"chat:{intent_result['chat_intent']}"
+    else:
+        parts = []
+        for it in intent_result.get("intents", []):
+            op, dim, metric = it.get("operation", "?"), it.get("dimension", "?"), it.get("metric", "?")
+            parts.append(f"{op}×{dim}×{metric}")
+        intent_str = "|".join(parts) if parts else "unknown"
+
+    log_entry = {
+        "ts": datetime.now().isoformat(),
+        "question": user_input.strip(),
+        "intent": intent_str,
+        "answer": answer,
+    }
+    log_path = os.path.join(LOG_DIR, "conversations.jsonl")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
     st.session_state.rounds.append({
         "question": user_input.strip(),
         "answer": answer,
@@ -182,3 +209,11 @@ if submitted and user_input.strip():
         "intent_html": _format_intent(intent_result),
     })
     st.rerun()
+
+# ── 侧边栏：运营后台入口 ──
+with st.sidebar:
+    st.markdown("### ⚙️ 管理")
+    if st.button("📊 运营后台", use_container_width=True):
+        st.switch_page("pages/admin.py")
+    st.markdown("---")
+    st.caption("V2.0 · 三元组意图 · 对比/聚合/推荐")
