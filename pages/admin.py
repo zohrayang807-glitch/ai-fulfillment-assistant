@@ -130,6 +130,19 @@ def reload_agent_config():
 # ── 侧边栏导航 ──
 with st.sidebar:
     st.markdown("### 📊 运营后台")
+
+    # 操作者昵称（多人协作用）
+    if "admin_nickname" not in st.session_state:
+        st.session_state.admin_nickname = "admin"
+    admin_nick = st.text_input(
+        "👤 操作者昵称",
+        value=st.session_state.admin_nickname,
+        max_chars=20,
+        key="admin_nick_input",
+    )
+    if admin_nick != st.session_state.admin_nickname:
+        st.session_state.admin_nickname = admin_nick
+
     st.markdown("---")
 
 PAGES = {
@@ -884,6 +897,60 @@ def page_agent():
         prompts = load_yaml(PROMPTS_FILE)
         versions = load_jsonl(PROMPT_VERSIONS_FILE)
 
+        # ── 英文术语词典 ──
+        PROMPT_GLOSSARY = {
+            "提示词 Key": {
+                "safety": "安全约束", "intent": "意图识别", "answer": "回答生成",
+                "compare_answer": "对比回答", "aggregate_answer": "聚合回答",
+                "recommend_answer": "推荐回答", "capability": "能力介绍",
+                "methodology": "方法论", "unsupported": "不支持的功能", "other": "无关闲聊",
+            },
+            "三元组轴 + 指标": {
+                "operation": "操作", "dimension": "维度", "metric": "指标",
+                "seller": "商家", "category": "品类", "route": "路线",
+                "ship_time": "发货时长", "transit_time": "运输时长", "total_time": "总时长",
+                "freight": "运费", "price": "价格", "neg_rate": "差评率",
+                "ontime_rate": "准时率", "promise_gap": "承诺偏差",
+                "query": "查询", "compare": "对比", "aggregate": "聚合", "recommend": "推荐",
+                "asc": "升序（从小到大）", "desc": "降序（从大到小）", "sort_direction": "排序方向",
+            },
+            "参数与字段": {
+                "entities": "实体参数", "seller_ids": "卖家ID列表", "buyer_state": "收货州",
+                "seller_state": "发货州", "intents": "意图数组", "chat_intent": "对话意图",
+                "history_block": "对话历史", "cross_category": "跨品类",
+                "review_reasons": "差评原因", "freight_estimate": "运费估算",
+                "median_days": "中位天数", "avg_freight": "平均运费",
+                "avg_promise": "平均承诺", "avg_actual": "平均实际", "n_reviews": "评论数",
+                "data": "数据", "json": "JSON 数据格式", "null": "空值", "llm": "大语言模型",
+            },
+            "品类名": {
+                "office_furniture": "办公家具", "food_drink": "食品饮料",
+                "fashion_shoes": "时尚鞋类", "watches_gifts": "手表礼品",
+                "books_general_interest": "大众图书", "bed_bath_table": "床品卫浴",
+            },
+            "其他": {
+                "token": "令牌", "prompt": "提示词", "temperature": "温度",
+                "max_tokens": "最大令牌数", "safety_rules": "安全规则",
+                "olist": "巴西电商数据集",
+            },
+        }
+
+        with st.expander("📖 英文术语词典（点击展开/收起）", expanded=False):
+            glossary_search = st.text_input("🔍 搜索英文术语或中文释义", key="glossary_search", placeholder="输入关键词...")
+            for group, terms in PROMPT_GLOSSARY.items():
+                if glossary_search.strip():
+                    q = glossary_search.strip().lower()
+                    filtered = {k: v for k, v in terms.items() if q in k.lower() or q in v.lower()}
+                else:
+                    filtered = terms
+                if filtered:
+                    st.markdown(f"**{group}**")
+                    cols = st.columns(3)
+                    for j, (en, zh) in enumerate(filtered.items()):
+                        cols[j % 3].markdown(f"- `{en}` — {zh}")
+
+        st.markdown("---")
+
         # 提示词编辑
         st.subheader("✏️ 编辑提示词")
         prompt_keys = [k for k in prompts.keys() if k != "safety"]
@@ -891,6 +958,14 @@ def page_agent():
 
         if selected_key:
             current_content = prompts.get(selected_key, "")
+
+            # MD 文件上传
+            uploaded_md = st.file_uploader("📄 上传 MD 文件覆盖提示词", type=["md"], key="upload_prompt_md")
+            if uploaded_md is not None:
+                md_content = uploaded_md.getvalue().decode("utf-8")
+                st.session_state[f"edit_{selected_key}"] = md_content
+                st.info(f"✅ 已读取「{uploaded_md.name}」（{len(md_content)} 字符），内容已填入编辑框，点击「保存提示词」生效。")
+
             edited = st.text_area(
                 f"编辑 {selected_key}",
                 value=current_content,
@@ -911,6 +986,7 @@ def page_agent():
                         "key": selected_key,
                         "content": edited,
                         "version": len([v for v in versions if v.get("key") == selected_key]) + 1,
+                        "user": st.session_state.get("admin_nickname", "admin"),
                     }
                     versions.append(version_entry)
                     save_jsonl(PROMPT_VERSIONS_FILE, versions)
@@ -920,26 +996,69 @@ def page_agent():
                     st.rerun()
 
             with col_b:
-                if st.button("🔄 回滚到历史版本", use_container_width=True):
-                    st.session_state["show_rollback"] = True
+                if st.button("🔄 刷新版本历史", use_container_width=True):
+                    st.rerun()
 
-        # 版本历史与回滚
-        if st.session_state.get("show_rollback", False):
-            st.markdown("---")
-            st.subheader("📜 版本历史")
+        # 版本历史（常驻展示）
+        st.markdown("---")
+        st.subheader("📜 版本历史")
+        if selected_key:
             key_versions = [v for v in versions if v.get("key") == selected_key]
+            # 当前生效版本号 = 最新一条
+            current_ver = key_versions[-1].get("version", "?") if key_versions else None
             if key_versions:
                 for i, v in enumerate(reversed(key_versions[-10:])):
                     ts = v.get("ts", "")[:19].replace("T", " ")
                     ver = v.get("version", "?")
-                    with st.expander(f"版本 {ver} — {ts}"):
-                        st.code(v.get("content", "")[:500])
-                        if st.button(f"↩️ 回滚到此版本", key=f"rollback_{i}"):
-                            prompts[selected_key] = v.get("content", "")
-                            save_yaml(PROMPTS_FILE, prompts)
-                            reload_agent_config()
-                            st.success(f"✅ 已回滚到版本 {ver}")
-                            st.rerun()
+                    v_user = v.get("user", "admin")
+                    preview = (v.get("content", "")[:100] + "...") if len(v.get("content", "")) > 100 else v.get("content", "")
+                    is_current = (ver == current_ver)
+                    tag = " 🟢当前" if is_current else ""
+                    with st.expander(f"v{ver}{tag} — {ts} ｜ 👤{v_user} ｜ {preview}"):
+                        st.code(v.get("content", ""))
+                        st.caption(f"操作者：**{v_user}**")
+                        col_dl, col_rb, col_del = st.columns(3)
+                        with col_dl:
+                            st.download_button(
+                                f"⬇️ 下载 v{ver}",
+                                data=v.get("content", ""),
+                                file_name=f"{selected_key}_v{ver}.md",
+                                mime="text/markdown",
+                                key=f"dl_{selected_key}_{ver}",
+                                use_container_width=True,
+                            )
+                        with col_rb:
+                            if st.button(f"↩️ 回滚", key=f"rollback_{i}", use_container_width=True):
+                                prompts[selected_key] = v.get("content", "")
+                                save_yaml(PROMPTS_FILE, prompts)
+                                reload_agent_config()
+                                st.success(f"✅ 已回滚到版本 {ver}")
+                                st.rerun()
+                        with col_del:
+                            if is_current:
+                                st.button("🔒 当前版本", key=f"del_{i}", disabled=True, use_container_width=True)
+                            else:
+                                if st.button(f"🗑️ 删除", key=f"del_{i}", use_container_width=True):
+                                    st.session_state[f"confirm_del_ver_{i}"] = True
+
+                        # 确认删除弹窗
+                        if st.session_state.get(f"confirm_del_ver_{i}", False):
+                            st.warning(f"确认删除 {selected_key} 版本 v{ver}（{ts}）？")
+                            c_yes, c_no = st.columns(2)
+                            with c_yes:
+                                if st.button("✅ 确认删除", key=f"confirm_yes_ver_{i}"):
+                                    # 从 versions 中精确移除该条
+                                    for j, rv in enumerate(versions):
+                                        if rv.get("key") == selected_key and rv.get("version") == ver:
+                                            versions.pop(j)
+                                            break
+                                    save_jsonl(PROMPT_VERSIONS_FILE, versions)
+                                    st.session_state.pop(f"confirm_del_ver_{i}", None)
+                                    st.rerun()
+                            with c_no:
+                                if st.button("❌ 取消", key=f"confirm_no_ver_{i}"):
+                                    st.session_state.pop(f"confirm_del_ver_{i}", None)
+                                    st.rerun()
             else:
                 st.info("暂无历史版本")
 
