@@ -125,8 +125,8 @@ def main():
     print(f"{'═' * 60}\n")
 
     results = []
-    for tc in cases:
-        tc_id = tc.get("id", idx + 1)
+    for _idx, tc in enumerate(cases, 1):
+        tc_id = tc.get("id", _idx)
         section = tc.get("section", "")
         desc = tc.get("q") or " → ".join(tc.get("turns", []))
         print(f"[{tc_id:2d}] {desc} ...", end=" ", flush=True)
