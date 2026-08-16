@@ -1015,6 +1015,8 @@ def chat(user_question: str, history=None, user: str = "我"):
 
     返回: (intent_result, entities, all_data, answer, trace)
     """
+    # 每次对话重读配置（后台改模型/prompt 后，助手立即生效，跨进程）
+    reload_config()
     reload_config()  # 每次对话重新加载配置（支持热更新）
     trace = []
 
