@@ -1,4 +1,4 @@
-model: deepseek-v4-flash
+model: deepseek-chat
 judge_model: deepseek-v4-pro
 judge_temperature: 0.3
 judge_max_tokens: 2000
