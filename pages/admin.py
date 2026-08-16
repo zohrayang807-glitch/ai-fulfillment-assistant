@@ -358,9 +358,9 @@ def page_model():
     st.subheader("📋 当前配置")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("主模型", cfg.get("model", "deepseek-v4-flash"))
+        st.markdown(f"**主模型**  \n<code style='font-size:0.9rem'>{cfg.get('model', 'deepseek-v4-flash')}</code>", unsafe_allow_html=True)
     with col2:
-        st.metric("裁判模型", cfg.get("judge_model", "deepseek-v4-pro"))
+        st.markdown(f"**裁判模型**  \n<code style='font-size:0.9rem'>{cfg.get('judge_model', 'deepseek-v4-pro')}</code>", unsafe_allow_html=True)
     with col3:
         st.metric("意图温度", cfg.get("temperature_intent", 0))
     with col4:
