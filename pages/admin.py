@@ -17,6 +17,12 @@ from collections import Counter
 st.set_page_config(page_title="运营后台 · V2.0", layout="wide")
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # pages/ 的上一级 = 项目根
+
+# ── 数据库访问层 ──
+sys.path.insert(0, BASE_DIR)
+from dotenv import load_dotenv
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+import db
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 EVAL_DIR = os.path.join(BASE_DIR, "eval")
@@ -166,9 +172,9 @@ def page_dashboard():
     st.title("📈 指标看板")
     st.caption("Agent 层 + 模型层合一的运营视图")
 
-    convs = load_jsonl(CONV_LOG)
+    convs = db.get_conversations(limit=1000)
     tokens = load_jsonl(TOKEN_LOG)
-    evals = load_jsonl(EVAL_LOG)
+    evals = db.get_evaluations(limit=200)
 
     # ── KPI 卡片 ──
     total_convs = len(convs)
@@ -183,7 +189,7 @@ def page_dashboard():
         last_eval_pass = f"{evals[-1].get('pass_rate', 0):.0%}"
 
     # 统计坏例数
-    cases = load_jsonl(CASES_FILE)
+    cases = db.get_cases()
     bad_count = sum(1 for c in cases if c.get("section") == "坏例审核")
 
     col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -425,8 +431,8 @@ def page_eval_mgmt():
 
     # ── Tab1: Eval 中心 ──
     with tab_eval:
-        cases = load_jsonl(CASES_FILE)
-        evals = load_jsonl(EVAL_LOG)
+        cases = db.get_cases()
+        evals = db.get_evaluations()
 
         # 概览
         col1, col2, col3, col4 = st.columns(4)
@@ -483,9 +489,16 @@ def page_eval_mgmt():
                     "pass_rate": pass_rate,
                     "output": output[-500:],
                 }
-                evals = load_jsonl(EVAL_LOG)
-                evals.append(eval_entry)
-                save_jsonl(EVAL_LOG, evals)
+                db.insert_evaluation(
+                    ts=eval_entry["ts"],
+                    question=f"Eval run @ {eval_entry['ts'][:19]}",
+                    answer=output[-500:],
+                    scores={"total": eval_entry["total"], "pass_rate": eval_entry["pass_rate"]},
+                    overall=eval_entry["pass_rate"],
+                    comment=f"Eval 通过率 {eval_entry['pass_rate']:.0%}",
+                    user=st.session_state.get("admin_nickname", "admin"),
+                )
+                evals = db.get_evaluations()
             else:
                 st.error("❌ Eval 运行失败")
                 st.code(result.stderr, language=None)
@@ -506,16 +519,15 @@ def page_eval_mgmt():
                     new_case = {
                         "section": new_section,
                         "q": new_q,
-                        "expect_intent": new_intent,
+                        "expected_intents": [new_intent],
                         "banned_answer_contains_intent": True,
                         "user": new_user,
                     }
                     if new_banned:
-                        new_case["banned_words"] = [w.strip() for w in new_banned.split(",") if w.strip()]
+                        new_case["banned"] = [w.strip() for w in new_banned.split(",") if w.strip()]
                     if new_required:
-                        new_case["required_words"] = [w.strip() for w in new_required.split(",") if w.strip()]
-                    with open(CASES_FILE, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(new_case, ensure_ascii=False) + "\n")
+                        new_case["required"] = [w.strip() for w in new_required.split(",") if w.strip()]
+                    db.add_case(new_case)
                     st.success("✅ 用例已添加")
                     st.rerun()
 
@@ -550,8 +562,9 @@ def page_eval_mgmt():
                 c_yes, c_no = st.columns(2)
                 with c_yes:
                     if st.button("✅ 确认删除", key=f"confirm_yes_case_{i}"):
-                        cases.pop(i)
-                        save_jsonl(CASES_FILE, cases)
+                        case_id = case.get("id")
+                        if case_id:
+                            db.delete_case(case_id)
                         st.session_state.pop(f"confirm_del_case_{i}", None)
                         st.rerun()
                 with c_no:
@@ -563,21 +576,25 @@ def page_eval_mgmt():
             if st.session_state.get(f"editing_case_{i}", False):
                 with st.form(f"edit_form_{i}"):
                     edit_q = st.text_input("问题", value=case.get("q", ""))
-                    edit_intent = st.text_input("期望意图", value=case.get("expect_intent", ""))
+                    edit_intent = st.text_input("期望意图", value=case.get("expected_intents", [""])[0] if case.get("expected_intents") else "")
                     edit_section = st.text_input("分类", value=case.get("section", ""))
-                    edit_banned = st.text_input("禁词", value=",".join(case.get("banned_words", [])))
-                    edit_required = st.text_input("必含词", value=",".join(case.get("required_words", [])))
+                    edit_banned = st.text_input("禁词", value=",".join(case.get("banned", [])))
+                    edit_required = st.text_input("必含词", value=",".join(case.get("required", [])))
                     col_save, col_cancel = st.columns(2)
                     with col_save:
                         if st.form_submit_button("💾 保存"):
-                            cases[i]["q"] = edit_q
-                            cases[i]["expect_intent"] = edit_intent
-                            cases[i]["section"] = edit_section
+                            updates = {
+                                "q": edit_q,
+                                "expected_intents": [edit_intent],
+                                "section": edit_section,
+                            }
                             if edit_banned:
-                                cases[i]["banned_words"] = [w.strip() for w in edit_banned.split(",")]
+                                updates["banned"] = [w.strip() for w in edit_banned.split(",")]
                             if edit_required:
-                                cases[i]["required_words"] = [w.strip() for w in edit_required.split(",")]
-                            save_jsonl(CASES_FILE, cases)
+                                updates["required"] = [w.strip() for w in edit_required.split(",")]
+                            case_id = case.get("id")
+                            if case_id:
+                                db.update_case(case_id, updates)
                             st.session_state[f"editing_case_{i}"] = False
                             st.rerun()
                     with col_cancel:
@@ -598,9 +615,9 @@ def page_eval_mgmt():
 
     # ── Tab2: 坏例闭环 ──
     with tab_badcase:
-        convs = load_jsonl(CONV_LOG)
+        convs = db.get_conversations(limit=200)
         convs.sort(key=lambda x: x.get("ts", ""), reverse=True)
-        evaluations = load_jsonl(EVALUATIONS_LOG)
+        evaluations = db.get_evaluations()
 
         if not convs:
             st.info("暂无对话记录。使用助手产生对话后，这里会显示最近的对话。")
@@ -640,7 +657,7 @@ def page_eval_mgmt():
                         st.markdown(f"**评审：** 框架 {'✅' if fw.get('pass') else '❌'} | 裁判评分 **{mj.get('overall', '?')}**/10 — {mj.get('comment', '')}")
 
                     # 去重：检查是否已在 cases 中
-                    existing_cases = load_jsonl(CASES_FILE)
+                    existing_cases = db.get_cases()
                     already_marked = any(c.get("q") == q and c.get("section") == "坏例审核" for c in existing_cases)
                     if already_marked:
                         st.caption("⚠️ 该坏例已存在")
@@ -654,28 +671,24 @@ def page_eval_mgmt():
                                 bad_case = {
                                     "section": "坏例审核",
                                     "q": q,
-                                    "expect_intent": intent,
+                                    "expected_intents": [intent],
                                     "banned_answer_contains_intent": True,
                                     "user": conv_user,
                                     "reason": reason.strip(),
                                     "note": f"从对话日志标记 @ {ts}，原因：{reason.strip()}",
                                 }
-                                with open(CASES_FILE, "a", encoding="utf-8") as f:
-                                    f.write(json.dumps(bad_case, ensure_ascii=False) + "\n")
+                                db.add_case(bad_case)
 
                                 # 2. 生成 BUG 反馈单
-                                bug_entry = {
-                                    "ts": datetime.now().isoformat(),
-                                    "user": conv_user,
-                                    "question": q,
-                                    "intent": intent,
-                                    "answer": conv.get("answer", "")[:500],
-                                    "status": "待修复",
-                                    "reason": reason.strip(),
-                                    "note": f"从对话日志标记 @ {ts}，原因：{reason.strip()}",
-                                }
-                                with open(BUG_FEEDBACK_LOG, "a", encoding="utf-8") as f:
-                                    f.write(json.dumps(bug_entry, ensure_ascii=False) + "\n")
+                                db.insert_bug(
+                                    user=conv_user,
+                                    question=q,
+                                    intent=intent,
+                                    answer=conv.get("answer", "")[:500],
+                                    status="待修复",
+                                    reason=reason.strip(),
+                                    note=f"从对话日志标记 @ {ts}，原因：{reason.strip()}",
+                                )
 
                                 st.success("✅ 已补充到 Eval 测试中")
                         with col_del:
@@ -688,8 +701,9 @@ def page_eval_mgmt():
                         c_yes, c_no = st.columns(2)
                         with c_yes:
                             if st.button("✅ 确认删除", key=f"confirm_yes_conv_{idx}"):
-                                convs.pop(idx)
-                                save_jsonl(CONV_LOG, convs)
+                                conv_id = conv.get("id")
+                                if conv_id:
+                                    db.delete_conversation(conv_id)
                                 st.session_state.pop(f"confirm_del_conv_{idx}", None)
                                 st.rerun()
                         with c_no:
@@ -699,18 +713,7 @@ def page_eval_mgmt():
 
     # ── Tab3: BUG 反馈 ──
     with tab_bug:
-        bugs = load_jsonl(BUG_FEEDBACK_LOG)
-        # 去重：同一 (question, ts[:19]) 只保留第一条（最早标记的）
-        seen_keys = set()
-        deduped = []
-        for b in bugs:
-            key = (b.get("question", ""), b.get("ts", "")[:19])
-            if key not in seen_keys:
-                seen_keys.add(key)
-                deduped.append(b)
-        if len(deduped) < len(bugs):
-            save_jsonl(BUG_FEEDBACK_LOG, deduped)
-            bugs = deduped
+        bugs = db.get_bugs()
         bugs.sort(key=lambda x: x.get("ts", ""), reverse=True)
 
         if not bugs:
@@ -759,17 +762,10 @@ def page_eval_mgmt():
                     st.markdown(f"**状态：** {status}")
 
                     if status == "待修复":
-                        # 用 (question, ts[:19]) 精确定位原始列表中的那条
-                        bug_ts_key = bug.get("ts", "")[:19]
-                        real_idx = next(
-                            (j for j, b in enumerate(bugs)
-                             if b.get("question") == q and b.get("ts", "")[:19] == bug_ts_key),
-                            None,
-                        )
-                        if real_idx is not None and st.button("✅ 标记已修复", key=f"fix_{real_idx}"):
-                            bugs[real_idx]["status"] = "已修复"
-                            bugs[real_idx]["fixed_at"] = datetime.now().isoformat()
-                            save_jsonl(BUG_FEEDBACK_LOG, bugs)
+                        bug_id = bug.get("id")
+                        if st.button("✅ 标记已修复", key=f"fix_{bug.get('id', i)}"):
+                            if bug_id:
+                                db.update_bug_status(bug_id, "已修复")
                             st.rerun()
 
 
@@ -895,7 +891,7 @@ def page_agent():
     # ── 提示词调优 ──
     with tab_prompts:
         prompts = load_yaml(PROMPTS_FILE)
-        versions = load_jsonl(PROMPT_VERSIONS_FILE)
+        versions = db.get_prompt_versions()
 
         # ── 英文术语词典 ──
         PROMPT_GLOSSARY = {
@@ -981,18 +977,16 @@ def page_agent():
                     save_yaml(PROMPTS_FILE, prompts)
 
                     # 记录版本快照
-                    version_entry = {
-                        "ts": datetime.now().isoformat(),
-                        "key": selected_key,
-                        "content": edited,
-                        "version": len([v for v in versions if v.get("key") == selected_key]) + 1,
-                        "user": st.session_state.get("admin_nickname", "admin"),
-                    }
-                    versions.append(version_entry)
-                    save_jsonl(PROMPT_VERSIONS_FILE, versions)
+                    new_ver = len([v for v in versions if v.get("key") == selected_key]) + 1
+                    db.save_prompt_version(
+                        key=selected_key,
+                        content=edited,
+                        version=new_ver,
+                        user=st.session_state.get("admin_nickname", "admin"),
+                    )
 
                     reload_agent_config()
-                    st.success(f"✅ 已保存 {selected_key}（版本 {version_entry['version']}）")
+                    st.success(f"✅ 已保存 {selected_key}（版本 {new_ver}）")
                     st.rerun()
 
             with col_b:
@@ -1047,12 +1041,9 @@ def page_agent():
                             c_yes, c_no = st.columns(2)
                             with c_yes:
                                 if st.button("✅ 确认删除", key=f"confirm_yes_ver_{i}"):
-                                    # 从 versions 中精确移除该条
-                                    for j, rv in enumerate(versions):
-                                        if rv.get("key") == selected_key and rv.get("version") == ver:
-                                            versions.pop(j)
-                                            break
-                                    save_jsonl(PROMPT_VERSIONS_FILE, versions)
+                                    ver_id = v.get("id")
+                                    if ver_id:
+                                        db.delete_prompt_version(ver_id)
                                     st.session_state.pop(f"confirm_del_ver_{i}", None)
                                     st.rerun()
                             with c_no:

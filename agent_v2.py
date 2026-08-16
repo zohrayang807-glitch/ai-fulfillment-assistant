@@ -13,6 +13,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 import yaml
+import db
 
 # ── 加载环境变量 ──
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -945,10 +946,16 @@ def _run_dual_review(question: str, answer: str, all_data: list, user: str = "�
 
 
 def _save_evaluation(review: dict):
-    """将评审结果追加到 logs/evaluations.jsonl"""
-    eval_path = _LOG_DIR / "evaluations.jsonl"
-    with open(eval_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(review, ensure_ascii=False) + "\n")
+    """将评审结果保存到数据库"""
+    db.insert_evaluation(
+        ts=review.get("ts", ""),
+        question=review.get("question", ""),
+        answer=review.get("answer", ""),
+        scores=review.get("scores", {}),
+        overall=review.get("overall", 0),
+        comment=review.get("comment", ""),
+        user=review.get("user", ""),
+    )
 
 
 # ═══════════════════════════════════════════════════════

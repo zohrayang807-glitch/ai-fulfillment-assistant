@@ -8,15 +8,22 @@ import streamlit as st
 import json
 import time
 import os
+import sys
 from datetime import datetime
-
-from agent_v2 import chat
 
 st.set_page_config(page_title="懂履约的 AI 购物助手 V2.0", layout="wide", initial_sidebar_state="collapsed")
 
 # 确保 logs 目录存在
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# 数据库访问层
+sys.path.insert(0, os.path.dirname(__file__))
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+import db
+
+from agent_v2 import chat
 
 # ── 全局样式（和 V1 保持一致）──
 st.markdown("""
@@ -222,9 +229,11 @@ if submitted and user_input.strip():
         "intent": intent_str,
         "answer": answer,
     }
-    log_path = os.path.join(LOG_DIR, "conversations.jsonl")
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    db.insert_conversation(
+        ts=log_entry["ts"], user=log_entry["user"],
+        question=log_entry["question"], intent=log_entry["intent"],
+        answer=log_entry["answer"]
+    )
 
     st.session_state.rounds.append({
         "question": user_input.strip(),
