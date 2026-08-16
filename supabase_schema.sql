@@ -64,3 +64,15 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     note TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_versions_section ON prompt_versions (section, version);
+
+-- 6. Token 用量
+CREATE TABLE IF NOT EXISTS token_usage (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    caller TEXT NOT NULL DEFAULT 'unknown',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_tokens INT NOT NULL DEFAULT 0,
+    completion_tokens INT NOT NULL DEFAULT 0,
+    total_tokens INT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage (ts DESC);

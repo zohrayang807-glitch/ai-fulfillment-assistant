@@ -106,18 +106,13 @@ def _check_filters(intent: dict, entities: dict) -> Optional[str]:
 
 
 def _log_token_usage(model: str, prompt_tokens: int, completion_tokens: int, caller: str = "unknown"):
-    """记录每次 API 调用的 token 用量"""
-    entry = {
-        "ts": datetime.now().isoformat(),
-        "caller": caller,
-        "model": model,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-    }
-    log_path = _LOG_DIR / "token_usage.jsonl"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    """记录每次 API 调用的 token 用量（写 Supabase，失败 fallback 本地）"""
+    db.insert_token_usage(
+        caller=caller,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
 
 
 # ── 初始化 DeepSeek 客户端 ──

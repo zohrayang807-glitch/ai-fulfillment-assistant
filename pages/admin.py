@@ -193,7 +193,7 @@ def page_dashboard():
     st.caption("Agent 层 + 模型层合一的运营视图")
 
     convs = db.get_conversations(limit=1000)
-    tokens = load_jsonl(TOKEN_LOG)
+    tokens = db.get_token_usage()
     evals = db.get_evaluations(limit=200)
 
     # ── KPI 卡片 ──
@@ -352,7 +352,7 @@ def page_model():
     st.caption("管理主模型、裁判模型、参数配置，保存后 Agent 下次对话自动生效")
 
     cfg = load_yaml(MODEL_FILE)
-    tokens = load_jsonl(TOKEN_LOG)
+    tokens = db.get_token_usage()
 
     # ── 当前配置预览 ──
     st.subheader("📋 当前配置")

@@ -27,6 +27,7 @@ EVALUATIONS_FILE = EVAL_LOG
 CASES_FILE = EVAL_DIR / "cases.jsonl"
 BUG_FILE = LOGS_DIR / "bug_feedback.jsonl"
 PV_FILE = LOGS_DIR / "prompt_versions.jsonl"
+TOKEN_FILE = LOGS_DIR / "token_usage.jsonl"
 
 
 def _load_jsonl(path):
@@ -447,6 +448,46 @@ def delete_prompt_version(version_id):
         _save_jsonl(PV_FILE, new_versions)
         return True
     return False
+
+
+# ═══════════════════════════════════════════════
+# 6. token_usage（Token 用量）
+# ═══════════════════════════════════════════════
+
+def insert_token_usage(caller="unknown", model="", prompt_tokens=0,
+                       completion_tokens=0, total_tokens=0, ts=None):
+    """记录一次 API 调用的 token 用量"""
+    row = {
+        "ts": ts or datetime.now().isoformat(),
+        "caller": caller,
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens or (prompt_tokens + completion_tokens),
+    }
+    client = _get_client()
+    if client:
+        try:
+            client.table("token_usage").insert(row).execute()
+            return True
+        except Exception as e:
+            print(f"[db] insert_token_usage 失败，已回退本地: {e}")
+    _append_jsonl(TOKEN_FILE, row)
+    return True
+
+
+def get_token_usage(limit=1000):
+    """获取 Token 用量记录，按时间倒序"""
+    client = _get_client()
+    if client:
+        try:
+            resp = client.table("token_usage").select("*").order("ts", desc=True).limit(limit).execute()
+            return resp.data
+        except Exception:
+            pass
+    items = _load_jsonl(TOKEN_FILE)
+    items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    return items[:limit]
 
 
 # ═══════════════════════════════════════════════
