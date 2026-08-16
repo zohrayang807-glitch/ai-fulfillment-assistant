@@ -151,8 +151,8 @@ def insert_evaluation(ts=None, question="", answer="", scores=None, overall=0,
         try:
             client.table("evaluations").insert(row).execute()
             return True
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[db] insert_evaluation 失败，已回退本地: {e}")
     _append_jsonl(EVAL_LOG, row)
     return True
 
