@@ -547,7 +547,7 @@ def page_eval_mgmt():
             q = case.get("q", "")
             intent = case.get("expect_intent", "")
             user = case.get("user", "我")
-            is_multi_turn = "turns" in case
+            is_multi_turn = bool(case.get("turns"))
             label = "多轮对话用例" if is_multi_turn else q[:50]
             col_a, col_spacer, col_b, col_c = st.columns([6, 2, 1, 1])
             with col_a:
