@@ -161,8 +161,11 @@ PAGES = {
 page = st.sidebar.radio("导航", list(PAGES.keys()), label_visibility="collapsed")
 
 st.sidebar.markdown("---")
-if st.sidebar.button("← 返回助手", use_container_width=True):
-    st.switch_page("app_v2.py")
+# 多页模式下 switch_page 无法切回主文件，用链接跳转（兼容本地 + Streamlit Cloud）
+st.sidebar.markdown(
+    '<a href="/" target="_self" style="text-decoration:none;font-weight:600">← 返回助手</a>',
+    unsafe_allow_html=True,
+)
 
 
 # ════════════════════════════════════════
