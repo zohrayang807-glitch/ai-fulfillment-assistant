@@ -67,6 +67,11 @@ html, body, [class*="css"] { font-family: "Inter", "Noto Sans SC", sans-serif; }
     border-radius: 12px; font-size: 0.78rem; font-weight: 500;
     background: #e8eaf6; color: #3949ab;
 }
+/* 图表 x 轴标签横排/斜排，避免竖排 */
+[data-testid="stChart"] g[aria-label*="axis"] text,
+[data-testid="stVegaLiteChart"] text[aria-label*="axis"] {
+    writing-mode: horizontal-tb !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -215,7 +220,7 @@ def page_dashboard():
     with col3:
         st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{total_tokens:,}</div><div class="kpi-label">总 Token</div></div>""", unsafe_allow_html=True)
     with col4:
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">${total_cost:.4f}</div><div class="kpi-label">预估成本</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">${total_cost:.2f}</div><div class="kpi-label">预估成本</div></div>""", unsafe_allow_html=True)
     with col5:
         st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{last_eval_pass}</div><div class="kpi-label">Eval 通过率</div></div>""", unsafe_allow_html=True)
     with col6:
@@ -234,7 +239,7 @@ def page_dashboard():
                 if d:
                     date_counts[d] += 1
             today_dt = datetime.now()
-            dates = [(today_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+            dates = [(today_dt - timedelta(days=i)).strftime("%m-%d") for i in range(6, -1, -1)]
             counts = [date_counts.get(d, 0) for d in dates]
             st.bar_chart({"日期": dates, "调用数": counts}, x="日期", y="调用数")
         else:
@@ -243,7 +248,7 @@ def page_dashboard():
     with col_b:
         st.subheader("🎯 Eval 通过率走势")
         if evals:
-            eval_dates = [e.get("ts", "")[:10] for e in evals[:14]]
+            eval_dates = [str(e.get("ts", ""))[5:10] for e in evals[:14]]
             eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[:14]]
             st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
         else:
@@ -273,15 +278,21 @@ def page_dashboard():
         with col_x:
             st.markdown("**操作 (operation)**")
             if op_counter:
-                st.bar_chart(dict(op_counter.most_common()))
+                _d = dict(op_counter.most_common())
+                import pandas as _pd
+                st.bar_chart(_pd.DataFrame({"操作": list(_d.values())}, index=list(_d.keys())))
         with col_y:
             st.markdown("**维度 (dimension)**")
             if dim_counter:
-                st.bar_chart(dict(dim_counter.most_common()))
+                _d = dict(dim_counter.most_common())
+                import pandas as _pd
+                st.bar_chart(_pd.DataFrame({"维度": list(_d.values())}, index=list(_d.keys())))
         with col_z:
             st.markdown("**指标 (metric)**")
             if metric_counter:
-                st.bar_chart(dict(metric_counter.most_common()))
+                _d = dict(metric_counter.most_common())
+                import pandas as _pd
+                st.bar_chart(_pd.DataFrame({"指标": list(_d.values())}, index=list(_d.keys())))
 
         st.markdown("---")
         st.subheader("🔗 完整三元组 Top 15")
@@ -465,7 +476,7 @@ def page_eval_mgmt():
         # 通过率趋势
         if evals and len(evals) > 1:
             st.subheader("📈 通过率趋势")
-            eval_dates = [e.get("ts", "")[:10] for e in evals[:14]]
+            eval_dates = [str(e.get("ts", ""))[5:10] for e in evals[:14]]
             eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[:14]]
             st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
 
