@@ -25,7 +25,8 @@ try:
     import db
     from agent_v2 import chat
 except Exception as _import_err:
-    st.error(f"⚠️ 模块加载失败：{_import_err}")
+    import traceback
+    st.error(f"⚠️ 模块加载失败：\n\n```\n{traceback.format_exc()}\n```")
     st.stop()
 
 # ── 全局样式（和 V1 保持一致）──
