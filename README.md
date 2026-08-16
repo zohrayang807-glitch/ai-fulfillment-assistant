@@ -52,15 +52,16 @@ ai-portfolio/
 ├── agent.py               # V1（单标签意图），保留用于对比
 ├── agent_v2.py            # V2（三元组架构，核心）
 ├── app.py                 # V1 网页（Streamlit 双栏 UI）
-├── app_v2.py              # V2 网页（与 V1 并存对比）
+├── app_v2.py              # V2 网页（助手，主入口）
+├── pages/admin.py         # 运营后台（指标看板/模型管理/测评管理/Agent管理）
+├── db.py                  # Supabase 数据访问层（+ JSONL fallback）
 ├── knowledge_base/        # 履约知识库（预计算查询表）
-│   ├── query.py           # V1 数据层（query_timing/risk/cost...）
-│   └── query_v2.py        # V2 聚合查询层
-├── analysis/              # 数据复现脚本（build_kb/build_delivery_promise/...）
-├── eval/                  # Eval 评测工程
-│   ├── cases.jsonl        # 31 条评测用例（意图/防幻觉/边界）
-│   └── eval.py            # 自动判分脚本
-├── notes/                 # 设计文档（V2.0 设计文档、任务清单、能力地图）
+├── analysis/              # 数据复现脚本
+├── eval/                  # Eval 评测工程（32 条用例，并发提速）
+├── config/                # 配置（model.yaml / prompts.yaml / filters.yaml）
+├── notes/                 # 文档（PRD / AI架构 / 产品说明书 / 测试说明书 / 任务清单）
+├── supabase_schema.sql    # Supabase 建表脚本
+├── migrate_to_db.py       # JSONL → Supabase 迁移脚本
 ├── olist/                 # 原始数据（9 个 CSV，不入库）
 └── REPORT.md              # 数据分析报告
 ```
@@ -68,25 +69,49 @@ ai-portfolio/
 ## 快速开始
 
 ```bash
-# 1. 下载数据集到 olist/ 目录
-# 2. 安装依赖
-pip install pandas openai streamlit python-dotenv
+# 1. 安装依赖
+pip install -r requirements.txt
 
-# 3. 命令行测试（V2）
-python agent_v2.py
+# 2. 本地运行
+streamlit run app_v2.py          # 助手
+streamlit run pages/admin.py     # 运营后台
 
-# 4. 网页（V2）
-streamlit run app_v2.py
-
-# 5. Eval 回归（每次改代码后跑）
-python eval/eval.py        # 当前 31/31 通过
+# 3. Eval 回归（每次改代码后跑）
+python eval/eval.py              # 32 条，20 秒，100%
 ```
+
+## 部署（Streamlit Cloud）
+
+1. 代码推 GitHub（公开仓库）
+2. Streamlit Cloud 连接仓库，主文件 `app_v2.py`
+3. 配置 Secrets：`DEEPSEEK_API_KEY` / `SUPABASE_URL` / `SUPABASE_KEY`
+4. 部署后即可访问（助手 + `/admin` 后台）
+
+## 数据库（Supabase）
+
+- 5 张表：conversations / evaluations / cases / bug_feedback / prompt_versions
+- 关闭 RLS（多人共享）
+- 建表 SQL 见 `supabase_schema.sql`；本地数据用 `migrate_to_db.py` 迁移
 
 ## Eval 评测工程（自动防线）
 
-- **31 条用例**，覆盖：历史踩坑（防复发）、能力矩阵（每个操作×维度×指标）、通用边界（防幻觉/缺参引导/排序方向）
+- **32 条用例**，覆盖：历史踩坑（防复发）、能力矩阵、通用边界、坏例审核
 - **三重判分**：意图匹配 + 禁止词（防幻觉）+ 必须词（引导正确）
-- **每次改代码后跑 Eval**，漏一个自动拦截，防止"修 A 引 B"的回归
+- **并发提速**：32 条 20 秒（5.4×）
+- **数据源 Supabase**：坏例标记后直接进 Eval
+- **每次改代码后跑 Eval**，漏一个自动拦截
+
+## 坏例闭环（核心运营流程）
+
+```
+发现坏例 → 后台标记（填原因）→ 规范化进 Supabase → Eval 跑到 → 报表可视化
+```
+
+## 双层评审
+
+- **框架评审**（代码规则）：数据一致性、拆段、防编造
+- **模型评审**（裁判 v4-pro）：准确性/完整性/语气/防幻觉打分
+- 评审开关控制，默认关闭对话评审（省 token）
 
 ## 关键数据发现
 
