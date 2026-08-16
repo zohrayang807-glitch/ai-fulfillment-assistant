@@ -1,0 +1,6 @@
+streamlit>=1.30
+openai>=1.0
+pandas>=2.0
+python-dotenv>=1.0
+PyYAML>=6.0
+supabase>=2.0
