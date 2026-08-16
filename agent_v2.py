@@ -63,6 +63,15 @@ MODEL_CFG = _load_model_config()
 FILTERS = _load_filters()
 
 
+def _load_toggles() -> dict:
+    """从 logs/toggles.json 加载开关配置"""
+    toggles_path = _LOG_DIR / "toggles.json"
+    if not toggles_path.exists():
+        return {}
+    with open(toggles_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def reload_config():
     """热重载配置（admin 保存后调用）"""
     global PROMPTS, MODEL_CFG, FILTERS
@@ -853,23 +862,39 @@ def _framework_review(question: str, answer: str, all_data: list) -> dict:
     }
 
 
-def _model_judge_review(question: str, answer: str) -> dict:
+def _model_judge_review(question: str, answer: str, all_data: list = None) -> dict:
     """第二层·模型评审（裁判模型，主观）
     调用 judge_model 打分（1-10）+ 评语
+    传入 all_data 让裁判核对回答数字 vs 真实查询数据
     """
     judge_prompt = """你是一个严格的回答质量评审员。请对以下回答进行评分。
 
 【评审标准】
-1. 准确性（1-10）：数据是否准确，是否与问题匹配
+1. 准确性（1-10）：核对「助手回答」中的数字是否与「真实查询数据」一致。一致给高分（8-10），数字有偏差给中分（5-7），凭空编造给低分（1-4）
 2. 完整性（1-10）：是否完整回答了用户问题，是否有遗漏
 3. 语气人设（1-10）：是否柔和、亲切、俏皮，不能生硬
-4. 防幻觉（1-10）：是否避免了编造数据、过度承诺
+4. 防幻觉（1-10）：回答是否基于真实数据，而非编造。如果回答中的数字都能在真实数据中找到依据，给高分
+
+【重要】以下「真实查询数据」是系统真实查询的结果，回答必须基于这些数据。如果回答中的数字与真实数据一致，说明回答有据可依，不是编造。
 
 【输出格式】
 只输出 JSON，不要其他内容：
 {"scores": {"accuracy": 8, "completeness": 7, "tone": 9, "anti_hallucination": 8}, "overall": 8, "comment": "简短评语"}"""
 
-    user_msg = f"【用户问题】{question}\n\n【助手回答】{answer}"
+    # 构造数据摘要传给裁判
+    data_summary = ""
+    if all_data:
+        data_items = []
+        for entry in all_data:
+            d = entry.get("data")
+            if d is not None:
+                intent = entry.get("intent", {})
+                label = f"{intent.get('operation', '?')}×{intent.get('dimension', '?')}×{intent.get('metric', '?')}"
+                data_items.append(f"[{label}] {json.dumps(d, ensure_ascii=False)}")
+        if data_items:
+            data_summary = "\n\n【真实查询数据】\n" + "\n".join(data_items)
+
+    user_msg = f"【用户问题】{question}\n\n【助手回答】{answer}{data_summary}"
 
     try:
         resp = client.chat.completions.create(
@@ -905,12 +930,13 @@ def _model_judge_review(question: str, answer: str) -> dict:
         }
 
 
-def _run_dual_review(question: str, answer: str, all_data: list) -> dict:
+def _run_dual_review(question: str, answer: str, all_data: list, user: str = "我") -> dict:
     """执行双层评审，返回合并结果"""
     framework = _framework_review(question, answer, all_data)
-    model_judge = _model_judge_review(question, answer)
+    model_judge = _model_judge_review(question, answer, all_data)
     return {
         "ts": datetime.now().isoformat(),
+        "user": user,
         "question": question,
         "answer": answer[:500],
         "framework": framework,
@@ -966,7 +992,7 @@ def _extract_sort_value(entry: dict, metric: str) -> float:
 _PENDING_OPS = set()
 
 
-def chat(user_question: str, history=None):
+def chat(user_question: str, history=None, user: str = "我"):
     """
     V2 完整流程：意图识别 → 参数校验 → 数据查询 → 回答生成
 
@@ -988,13 +1014,14 @@ def chat(user_question: str, history=None):
         else:
             answer = "这个我还真帮不上，不过时效、价格、卖家风险这几样我拿手，要不要试试？"
         trace.append({"step": "②回答生成", "content": answer[:100]})
-        # 双层评审（对话类意图也评审）
-        try:
-            review = _run_dual_review(user_question, answer, [])
-            _save_evaluation(review)
-            trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
-        except Exception:
-            pass
+        # 双层评审（对话类意图也评审，仅在开关开启时）
+        toggles = _load_toggles()
+        if toggles.get("dual_review_enabled", False):
+            try:
+                review = _run_dual_review(user_question, answer, [], user=user)
+                _save_evaluation(review)
+            except Exception:
+                pass
         return intent_result, {}, [], answer, trace
 
     # ── 业务意图 ──
@@ -1140,13 +1167,14 @@ def chat(user_question: str, history=None):
     if missing_hints and not all_data:
         answer = missing_hints[0]  # 合并后的引导话术
         trace.append({"step": "④回答生成", "content": answer[:100]})
-        # 双层评审
-        try:
-            review = _run_dual_review(user_question, answer, [])
-            _save_evaluation(review)
-            trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
-        except Exception:
-            pass
+        # 双层评审（仅在开关开启时）
+        toggles = _load_toggles()
+        if toggles.get("dual_review_enabled", False):
+            try:
+                review = _run_dual_review(user_question, answer, [], user=user)
+                _save_evaluation(review)
+            except Exception:
+                pass
         return intent_result, entities, all_data, answer, trace
 
     # ── 部分缺参数 → 标记 ──
@@ -1165,13 +1193,14 @@ def chat(user_question: str, history=None):
         else:
             answer = "抱歉，这些数据暂时查不到呢，建议你直接联系卖家确认一下～"
         trace.append({"step": "④回答生成", "content": answer[:100]})
-        # 双层评审
-        try:
-            review = _run_dual_review(user_question, answer, [])
-            _save_evaluation(review)
-            trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
-        except Exception:
-            pass
+        # 双层评审（仅在开关开启时）
+        toggles = _load_toggles()
+        if toggles.get("dual_review_enabled", False):
+            try:
+                review = _run_dual_review(user_question, answer, [], user=user)
+                _save_evaluation(review)
+            except Exception:
+                pass
         return intent_result, entities, all_data, answer, trace
 
     answer = generate_answer_v2(user_question, intents, entities, valid_data)
@@ -1188,13 +1217,14 @@ def chat(user_question: str, history=None):
 
     trace.append({"step": "④回答生成", "content": answer[:100] + "..." if len(answer) > 100 else answer})
 
-    # ── 双层评审 ──
-    try:
-        review = _run_dual_review(user_question, answer, valid_data)
-        _save_evaluation(review)
-        trace.append({"step": "⑤双层评审", "content": f"框架:{review['framework']['pass']} 裁判:{review['model_judge']['overall']}"})
-    except Exception:
-        pass
+    # ── 双层评审（仅在开关开启时）──
+    toggles = _load_toggles()
+    if toggles.get("dual_review_enabled", False):
+        try:
+            review = _run_dual_review(user_question, answer, valid_data, user=user)
+            _save_evaluation(review)
+        except Exception:
+            pass
 
     return intent_result, entities, all_data, answer, trace
 

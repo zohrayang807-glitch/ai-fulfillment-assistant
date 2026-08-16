@@ -1,16 +1,9 @@
-# 模型配置 — 履约 AI 助手 V2.0
-# Agent 启动时读取，后台修改后 Agent 下次对话生效
-
-# 主模型：回答用户（对话模式，快省稳）
-model: deepseek-chat
-
-# 裁判模型：评审主模型回答质量（推理模型，评审需要深思）
+model: deepseek-v4-flash
 judge_model: deepseek-v4-pro
 judge_temperature: 0.3
-
-temperature_intent: 0
-temperature_answer: 0.7
+judge_max_tokens: 2000
+temperature_intent: 0.0
+temperature_answer: 0.6
 max_tokens_intent: 2000
 max_tokens_answer: 2000
 max_tokens_multi_answer: 2000
-judge_max_tokens: 2000

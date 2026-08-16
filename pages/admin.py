@@ -45,6 +45,9 @@ MODEL_PRICES = {
 # ── 全局样式 ──
 st.markdown("""
 <style>
+/* 隐藏默认页面导航 */
+[data-testid="stSidebarNav"] { display: none !important; }
+
 html, body, [class*="css"] { font-family: "Inter", "Noto Sans SC", sans-serif; }
 .kpi-card {
     background: #fff; border: 1px solid #e8e8e8; border-radius: 12px;
@@ -130,11 +133,10 @@ with st.sidebar:
     st.markdown("---")
 
 PAGES = {
-    "① 指标看板": "dashboard",
-    "② 模型管理": "model",
-    "③ Eval 评测中心": "eval",
-    "④ 测评管理": "eval_mgmt",
-    "⑤ Agent 管理": "agent",
+    "指标看板": "dashboard",
+    "模型管理": "model",
+    "测评管理": "eval_mgmt",
+    "Agent 管理": "agent",
 }
 
 page = st.sidebar.radio("导航", list(PAGES.keys()), label_visibility="collapsed")
@@ -145,7 +147,7 @@ if st.sidebar.button("← 返回助手", use_container_width=True):
 
 
 # ════════════════════════════════════════
-# 模块 ① 指标看板
+# 模块：指标看板
 # ════════════════════════════════════════
 def page_dashboard():
     st.title("📈 指标看板")
@@ -260,7 +262,7 @@ def page_dashboard():
 
 
 # ════════════════════════════════════════
-# 模块 ② 模型管理
+# 模块：模型管理
 # ════════════════════════════════════════
 def page_model():
     st.title("🤖 模型管理")
@@ -400,100 +402,7 @@ def page_model():
 
 
 # ════════════════════════════════════════
-# 模块 ③ Eval 评测中心
-# ════════════════════════════════════════
-def page_eval():
-    st.title("🧪 Eval 评测中心")
-    st.caption("运行 Eval 测试套件，查看用例和历史通过率")
-
-    cases = load_jsonl(CASES_FILE)
-    evals = load_jsonl(EVAL_LOG)
-
-    # 概览
-    col1, col2, col3, col4 = st.columns(4)
-    sections = Counter(c.get("section", "未分类") for c in cases)
-    with col1:
-        st.metric("总用例数", len(cases))
-    with col2:
-        st.metric("防复发", sections.get("防复发", 0))
-    with col3:
-        st.metric("能力矩阵", sections.get("能力矩阵", 0))
-    with col4:
-        last_pass = f"{evals[-1].get('pass_rate', 0):.0%}" if evals else "—"
-        st.metric("最近通过率", last_pass)
-
-    # 历史通过率趋势
-    if evals and len(evals) > 1:
-        st.subheader("📈 通过率趋势")
-        eval_dates = [e.get("ts", "")[:10] for e in evals[-14:]]
-        eval_rates = [round(e.get("pass_rate", 0) * 100, 1) for e in evals[-14:]]
-        st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
-
-    st.markdown("---")
-
-    # 运行 Eval
-    if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
-        with st.spinner("正在运行 Eval（预计 1~2 分钟）..."):
-            eval_script = os.path.join(EVAL_DIR, "eval.py")
-            result = subprocess.run(
-                [sys.executable, eval_script],
-                capture_output=True, text=True, cwd=BASE_DIR, timeout=180,
-            )
-
-        if result.returncode == 0:
-            output = result.stdout
-            st.success("✅ Eval 完成！")
-            st.code(output, language=None)
-
-            # 提取通过率并记录
-            pass_rate = 0.0
-            total_cases = 0
-            for line in output.split("\n"):
-                if "通过率" in line:
-                    m = re.search(r"(\d+(?:\.\d+)?)%", line)
-                    if m:
-                        pass_rate = float(m.group(1)) / 100
-                if "总用例" in line:
-                    m2 = re.search(r"(\d+)", line)
-                    if m2:
-                        total_cases = int(m2.group(1))
-
-            eval_entry = {
-                "ts": datetime.now().isoformat(),
-                "total": total_cases or len(cases),
-                "pass_rate": pass_rate,
-                "output": output[-500:],
-            }
-            evals = load_jsonl(EVAL_LOG)
-            evals.append(eval_entry)
-            save_jsonl(EVAL_LOG, evals)
-        else:
-            st.error("❌ Eval 运行失败")
-            st.code(result.stderr, language=None)
-
-    # 用例列表
-    st.markdown("---")
-    st.subheader(f"📋 用例列表（{len(cases)} 条）")
-    for i, case in enumerate(cases):
-        section = case.get("section", "")
-        q = case.get("q", "")
-        with st.expander(f"#{i+1} [{section}] {q[:50]}"):
-            st.json(case)
-
-    # 历史记录
-    if evals:
-        st.markdown("---")
-        st.subheader(f"📋 历史记录（{len(evals)} 次）")
-        for e in reversed(evals[-10:]):
-            ts = e.get("ts", "")[:19].replace("T", " ")
-            pr = e.get("pass_rate", 0)
-            total = e.get("total", 0)
-            color = "🟢" if pr >= 0.9 else "🟡" if pr >= 0.7 else "🔴"
-            st.markdown(f"{color} `{ts}` — 通过率 **{pr:.0%}** ({total} 条用例)")
-
-
-# ════════════════════════════════════════
-# 模块 ④ 测评管理
+# 模块：测评管理（含 Eval 中心 + 坏例闭环 + BUG 反馈）
 # ════════════════════════════════════════
 def page_eval_mgmt():
     st.title("🧪 测评管理")
@@ -507,15 +416,66 @@ def page_eval_mgmt():
         evals = load_jsonl(EVAL_LOG)
 
         # 概览
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
+        sections = Counter(c.get("section", "未分类") for c in cases)
         with col1:
             st.metric("总用例数", len(cases))
         with col2:
+            st.metric("防复发", sections.get("防复发", 0))
+        with col3:
+            st.metric("能力矩阵", sections.get("能力矩阵", 0))
+        with col4:
             last_pass = f"{evals[-1].get('pass_rate', 0):.0%}" if evals else "—"
             st.metric("最近通过率", last_pass)
-        with col3:
-            sections = Counter(c.get("section", "未分类") for c in cases)
-            st.metric("防复发用例", sections.get("防复发", 0))
+
+        # 通过率趋势
+        if evals and len(evals) > 1:
+            st.subheader("📈 通过率趋势")
+            eval_dates = [e.get("ts", "")[:10] for e in evals[-14:]]
+            eval_rates = [round(e.get("pass_rate", 0) * 100, 1) for e in evals[-14:]]
+            st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
+
+        st.markdown("---")
+
+        # 运行 Eval
+        if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
+            with st.spinner("正在运行 Eval（预计 1~2 分钟）..."):
+                eval_script = os.path.join(EVAL_DIR, "eval.py")
+                result = subprocess.run(
+                    [sys.executable, eval_script],
+                    capture_output=True, text=True, cwd=BASE_DIR, timeout=180,
+                )
+
+            if result.returncode == 0:
+                output = result.stdout
+                st.success("✅ Eval 完成！")
+                st.code(output, language=None)
+
+                # 提取通过率并记录
+                pass_rate = 0.0
+                total_cases = 0
+                for line in output.split("\n"):
+                    if "通过率" in line:
+                        m = re.search(r"(\d+(?:\.\d+)?)%", line)
+                        if m:
+                            pass_rate = float(m.group(1)) / 100
+                    if "总用例" in line:
+                        m2 = re.search(r"(\d+)", line)
+                        if m2:
+                            total_cases = int(m2.group(1))
+
+                eval_entry = {
+                    "ts": datetime.now().isoformat(),
+                    "total": total_cases or len(cases),
+                    "pass_rate": pass_rate,
+                    "output": output[-500:],
+                }
+                evals = load_jsonl(EVAL_LOG)
+                evals.append(eval_entry)
+                save_jsonl(EVAL_LOG, evals)
+            else:
+                st.error("❌ Eval 运行失败")
+                st.code(result.stderr, language=None)
 
         st.markdown("---")
 
@@ -524,6 +484,7 @@ def page_eval_mgmt():
             new_q = st.text_input("问题", key="new_case_q")
             new_intent = st.text_input("期望意图", key="new_case_intent", placeholder="query×seller×ship_time")
             new_section = st.selectbox("分类", ["防复发", "能力矩阵", "坏例审核"], key="new_case_section")
+            new_user = st.text_input("创建者", value="我", max_chars=20, key="new_case_user")
             new_banned = st.text_input("禁词（逗号分隔）", key="new_case_banned")
             new_required = st.text_input("必含词（逗号分隔）", key="new_case_required")
 
@@ -534,6 +495,7 @@ def page_eval_mgmt():
                         "q": new_q,
                         "expect_intent": new_intent,
                         "banned_answer_contains_intent": True,
+                        "user": new_user,
                     }
                     if new_banned:
                         new_case["banned_words"] = [w.strip() for w in new_banned.split(",") if w.strip()]
@@ -546,22 +508,43 @@ def page_eval_mgmt():
 
         # 用例列表（可编辑/删除）
         st.subheader(f"📋 用例列表（{len(cases)} 条）")
+        # 用户筛选
+        all_users = sorted(set(c.get("user", "我") for c in cases))
+        selected_user = st.selectbox("按用户筛选", ["全部"] + all_users, key="cases_user_filter")
+        if selected_user != "全部":
+            cases = [c for c in cases if c.get("user", "我") == selected_user]
+
         for i, case in enumerate(cases):
             section = case.get("section", "")
             q = case.get("q", "")
             intent = case.get("expect_intent", "")
-            col_a, col_b, col_c = st.columns([4, 1, 1])
+            user = case.get("user", "我")
+            is_multi_turn = "turns" in case
+            label = "多轮对话用例" if is_multi_turn else q[:50]
+            col_a, col_spacer, col_b, col_c = st.columns([6, 2, 1, 1])
             with col_a:
-                with st.expander(f"#{i+1} [{section}] {q[:50]}"):
+                with st.expander(f"#{i+1} [{section}] 👤{user} | {label}"):
                     st.json(case)
             with col_b:
                 if st.button("✏️", key=f"edit_case_{i}"):
                     st.session_state[f"editing_case_{i}"] = True
             with col_c:
                 if st.button("🗑️", key=f"del_case_{i}"):
-                    cases.pop(i)
-                    save_jsonl(CASES_FILE, cases)
-                    st.rerun()
+                    st.session_state[f"confirm_del_case_{i}"] = True
+            # 确认删除弹窗
+            if st.session_state.get(f"confirm_del_case_{i}", False):
+                st.warning(f"确认删除用例「{q[:40]}」？")
+                c_yes, c_no = st.columns(2)
+                with c_yes:
+                    if st.button("✅ 确认删除", key=f"confirm_yes_case_{i}"):
+                        cases.pop(i)
+                        save_jsonl(CASES_FILE, cases)
+                        st.session_state.pop(f"confirm_del_case_{i}", None)
+                        st.rerun()
+                with c_no:
+                    if st.button("❌ 取消", key=f"confirm_no_case_{i}"):
+                        st.session_state.pop(f"confirm_del_case_{i}", None)
+                        st.rerun()
 
             # 编辑模式
             if st.session_state.get(f"editing_case_{i}", False):
@@ -589,45 +572,36 @@ def page_eval_mgmt():
                             st.session_state[f"editing_case_{i}"] = False
                             st.rerun()
 
-        # 运行 Eval
-        st.markdown("---")
-        if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
-            with st.spinner("正在运行 Eval（预计 1~2 分钟）..."):
-                eval_script = os.path.join(EVAL_DIR, "eval.py")
-                result = subprocess.run(
-                    [sys.executable, eval_script],
-                    capture_output=True, text=True, cwd=BASE_DIR, timeout=180,
-                )
-            if result.returncode == 0:
-                output = result.stdout
-                st.success("✅ Eval 完成！")
-                st.code(output, language=None)
-                # 提取通过率
-                pass_rate = 0.0
-                for line in output.split("\n"):
-                    if "通过率" in line:
-                        m = re.search(r"(\d+(?:\.\d+)?)%", line)
-                        if m:
-                            pass_rate = float(m.group(1)) / 100
-                eval_entry = {"ts": datetime.now().isoformat(), "total": len(cases), "pass_rate": pass_rate, "output": output[-500:]}
-                evals.append(eval_entry)
-                save_jsonl(EVAL_LOG, evals)
-            else:
-                st.error("❌ Eval 运行失败")
-                st.code(result.stderr, language=None)
+        # 历史记录
+        if evals:
+            st.markdown("---")
+            st.subheader(f"📋 历史记录（{len(evals)} 次）")
+            for e in reversed(evals[-10:]):
+                ts = e.get("ts", "")[:19].replace("T", " ")
+                pr = e.get("pass_rate", 0)
+                total = e.get("total", 0)
+                color = "🟢" if pr >= 0.9 else "🟡" if pr >= 0.7 else "🔴"
+                st.markdown(f"{color} `{ts}` — 通过率 **{pr:.0%}** ({total} 条用例)")
 
     # ── Tab2: 坏例闭环 ──
     with tab_badcase:
         convs = load_jsonl(CONV_LOG)
+        convs.sort(key=lambda x: x.get("ts", ""), reverse=True)
         evaluations = load_jsonl(EVALUATIONS_LOG)
 
         if not convs:
             st.info("暂无对话记录。使用助手产生对话后，这里会显示最近的对话。")
         else:
+            # 用户筛选
+            all_users = sorted(set(c.get("user", "我") for c in convs))
+            selected_user = st.selectbox("按用户筛选", ["全部"] + all_users, key="badcase_user_filter")
+            if selected_user != "全部":
+                convs = [c for c in convs if c.get("user", "我") == selected_user]
+
             st.caption(f"共 {len(convs)} 条对话记录。标记坏例会同时生成 Eval 用例 + BUG 反馈单。")
 
-            display = convs[-50:]
-            start_idx = len(convs) - len(display)
+            display = convs[:50]
+            start_idx = 0
 
             for i, conv in enumerate(display):
                 idx = start_idx + i
@@ -635,8 +609,9 @@ def page_eval_mgmt():
                 q = conv.get("question", "")
                 intent = conv.get("intent", "")
                 answer = conv.get("answer", "")[:200]
+                user = conv.get("user", "我")
 
-                with st.expander(f"[{ts}] {q[:60]}"):
+                with st.expander(f"[{ts}] 👤{user} | {q[:60]}"):
                     st.markdown(f"**意图：** `{intent}`")
                     st.markdown(f"**回答：** {answer}")
 
@@ -651,53 +626,103 @@ def page_eval_mgmt():
                         mj = matched_eval.get("model_judge", {})
                         st.markdown(f"**评审：** 框架 {'✅' if fw.get('pass') else '❌'} | 裁判评分 **{mj.get('overall', '?')}**/10 — {mj.get('comment', '')}")
 
-                    col_a, col_b = st.columns([1, 3])
-                    with col_a:
-                        if st.button("🚩 标记为坏例", key=f"bad_{idx}"):
-                            # 1. 生成 Eval 用例
-                            bad_case = {
-                                "section": "坏例审核",
-                                "q": q,
-                                "expect_intent": intent,
-                                "banned_answer_contains_intent": True,
-                                "note": f"从对话日志标记 @ {ts}",
-                            }
-                            with open(CASES_FILE, "a", encoding="utf-8") as f:
-                                f.write(json.dumps(bad_case, ensure_ascii=False) + "\n")
+                    # 去重：检查是否已在 cases 中
+                    existing_cases = load_jsonl(CASES_FILE)
+                    already_marked = any(c.get("q") == q and c.get("section") == "坏例审核" for c in existing_cases)
+                    if already_marked:
+                        st.caption("⚠️ 该坏例已存在")
+                    else:
+                        reason = st.text_input("为什么是坏例（必填）", key=f"reason_{idx}", placeholder="描述问题...")
+                        col_mark, col_del = st.columns([1, 1])
+                        with col_mark:
+                            if st.button("🚩 标记为坏例", key=f"bad_{idx}", disabled=not reason.strip(), use_container_width=True):
+                                conv_user = conv.get("user", "我")
+                                # 1. 生成 Eval 用例
+                                bad_case = {
+                                    "section": "坏例审核",
+                                    "q": q,
+                                    "expect_intent": intent,
+                                    "banned_answer_contains_intent": True,
+                                    "user": conv_user,
+                                    "reason": reason.strip(),
+                                    "note": f"从对话日志标记 @ {ts}，原因：{reason.strip()}",
+                                }
+                                with open(CASES_FILE, "a", encoding="utf-8") as f:
+                                    f.write(json.dumps(bad_case, ensure_ascii=False) + "\n")
 
-                            # 2. 生成 BUG 反馈单
-                            bug_entry = {
-                                "ts": datetime.now().isoformat(),
-                                "question": q,
-                                "intent": intent,
-                                "answer": conv.get("answer", "")[:500],
-                                "status": "待修复",
-                                "note": f"从对话日志标记 @ {ts}",
-                            }
-                            with open(BUG_FEEDBACK_LOG, "a", encoding="utf-8") as f:
-                                f.write(json.dumps(bug_entry, ensure_ascii=False) + "\n")
+                                # 2. 生成 BUG 反馈单
+                                bug_entry = {
+                                    "ts": datetime.now().isoformat(),
+                                    "user": conv_user,
+                                    "question": q,
+                                    "intent": intent,
+                                    "answer": conv.get("answer", "")[:500],
+                                    "status": "待修复",
+                                    "reason": reason.strip(),
+                                    "note": f"从对话日志标记 @ {ts}，原因：{reason.strip()}",
+                                }
+                                with open(BUG_FEEDBACK_LOG, "a", encoding="utf-8") as f:
+                                    f.write(json.dumps(bug_entry, ensure_ascii=False) + "\n")
 
-                            st.success(f"✅ 已追加到 cases.jsonl + bug_feedback.jsonl")
+                                st.success("✅ 已补充到 Eval 测试中")
+                        with col_del:
+                            if st.button("🗑️ 删除该条", key=f"del_{idx}", use_container_width=True):
+                                st.session_state[f"confirm_del_conv_{idx}"] = True
 
-                    with col_b:
-                        if st.button("🗑️ 删除该条", key=f"del_{idx}"):
-                            convs.pop(idx)
-                            save_jsonl(CONV_LOG, convs)
-                            st.rerun()
+                    # 确认删除弹窗
+                    if st.session_state.get(f"confirm_del_conv_{idx}", False):
+                        st.warning(f"确认删除对话「{q[:40]}」？")
+                        c_yes, c_no = st.columns(2)
+                        with c_yes:
+                            if st.button("✅ 确认删除", key=f"confirm_yes_conv_{idx}"):
+                                convs.pop(idx)
+                                save_jsonl(CONV_LOG, convs)
+                                st.session_state.pop(f"confirm_del_conv_{idx}", None)
+                                st.rerun()
+                        with c_no:
+                            if st.button("❌ 取消", key=f"confirm_no_conv_{idx}"):
+                                st.session_state.pop(f"confirm_del_conv_{idx}", None)
+                                st.rerun()
 
     # ── Tab3: BUG 反馈 ──
     with tab_bug:
         bugs = load_jsonl(BUG_FEEDBACK_LOG)
+        # 去重：同一 (question, ts[:19]) 只保留第一条（最早标记的）
+        seen_keys = set()
+        deduped = []
+        for b in bugs:
+            key = (b.get("question", ""), b.get("ts", "")[:19])
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped.append(b)
+        if len(deduped) < len(bugs):
+            save_jsonl(BUG_FEEDBACK_LOG, deduped)
+            bugs = deduped
+        bugs.sort(key=lambda x: x.get("ts", ""), reverse=True)
 
         if not bugs:
             st.info("暂无 BUG 反馈。在「坏例闭环」中标记坏例后，会自动生成 BUG 反馈单。")
         else:
-            # 统计
-            pending = sum(1 for b in bugs if b.get("status") == "待修复")
-            fixed = sum(1 for b in bugs if b.get("status") == "已修复")
+            # 用户筛选
+            all_users = sorted(set(b.get("user", "我") for b in bugs))
+            col_filter1, col_filter2 = st.columns(2)
+            with col_filter1:
+                selected_user = st.selectbox("按用户筛选", ["全部"] + all_users, key="bug_user_filter")
+            with col_filter2:
+                filter_status = st.selectbox("筛选状态", ["全部", "待修复", "已修复"], key="bug_filter")
+
+            filtered = bugs
+            if selected_user != "全部":
+                filtered = [b for b in filtered if b.get("user", "我") == selected_user]
+            if filter_status != "全部":
+                filtered = [b for b in filtered if b.get("status") == filter_status]
+
+            # 统计（基于筛选后）
+            pending = sum(1 for b in filtered if b.get("status") == "待修复")
+            fixed = sum(1 for b in filtered if b.get("status") == "已修复")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("总反馈", len(bugs))
+                st.metric("总反馈", len(filtered))
             with col2:
                 st.metric("待修复", pending)
             with col3:
@@ -705,26 +730,30 @@ def page_eval_mgmt():
 
             st.markdown("---")
 
-            # 筛选
-            filter_status = st.selectbox("筛选状态", ["全部", "待修复", "已修复"], key="bug_filter")
-            filtered = bugs if filter_status == "全部" else [b for b in bugs if b.get("status") == filter_status]
-
             for i, bug in enumerate(filtered):
                 ts = bug.get("ts", "")[:19].replace("T", " ")
                 q = bug.get("question", "")
                 status = bug.get("status", "待修复")
+                user = bug.get("user", "我")
                 icon = "🔴" if status == "待修复" else "🟢"
 
-                with st.expander(f"{icon} [{ts}] {q[:60]}"):
+                with st.expander(f"{icon} [{ts}] 👤{user} | {q[:60]}"):
+                    st.markdown(f"**用户：** {user}")
                     st.markdown(f"**问题：** {q}")
+                    st.markdown(f"**反馈原因：** {bug.get('reason', '') or '—'}")
                     st.markdown(f"**意图：** `{bug.get('intent', '')}`")
                     st.markdown(f"**回答：** {bug.get('answer', '')[:200]}")
                     st.markdown(f"**状态：** {status}")
 
                     if status == "待修复":
-                        # 找到在原始列表中的索引
-                        real_idx = bugs.index(bug)
-                        if st.button("✅ 标记已修复", key=f"fix_{real_idx}"):
+                        # 用 (question, ts[:19]) 精确定位原始列表中的那条
+                        bug_ts_key = bug.get("ts", "")[:19]
+                        real_idx = next(
+                            (j for j, b in enumerate(bugs)
+                             if b.get("question") == q and b.get("ts", "")[:19] == bug_ts_key),
+                            None,
+                        )
+                        if real_idx is not None and st.button("✅ 标记已修复", key=f"fix_{real_idx}"):
                             bugs[real_idx]["status"] = "已修复"
                             bugs[real_idx]["fixed_at"] = datetime.now().isoformat()
                             save_jsonl(BUG_FEEDBACK_LOG, bugs)
@@ -732,7 +761,7 @@ def page_eval_mgmt():
 
 
 # ════════════════════════════════════════
-# 模块 ⑤ Agent 管理
+# 模块：Agent 管理
 # ════════════════════════════════════════
 def page_agent():
     st.title("⚙️ Agent 管理")
@@ -837,6 +866,18 @@ def page_agent():
                 st.error(f"🚫 「{preview_combo}」已被禁用，前端会返回拦截引导")
             else:
                 st.success(f"✅ 「{preview_combo}」未被禁用，正常查询")
+
+        # ── 双层评审开关 ──
+        st.markdown("---")
+        st.subheader("🔬 双层评审开关")
+        st.caption("开启后，每次对话会调用裁判模型评审（慢、费 token）。关闭时只在 Eval 环节评审。")
+        toggles = load_toggles()
+        dual_review_enabled = toggles.get("dual_review_enabled", False)
+        new_val = st.toggle("对话时启用双层评审", value=dual_review_enabled, key="toggle_dual_review")
+        if new_val != dual_review_enabled:
+            toggles["dual_review_enabled"] = new_val
+            save_toggles(toggles)
+            st.rerun()
 
     # ── 提示词调优 ──
     with tab_prompts:
@@ -1004,13 +1045,11 @@ def page_agent():
 
 
 # ── 路由 ──
-if page == "① 指标看板":
+if page == "指标看板":
     page_dashboard()
-elif page == "② 模型管理":
+elif page == "模型管理":
     page_model()
-elif page == "③ Eval 评测中心":
-    page_eval()
-elif page == "④ 测评管理":
+elif page == "测评管理":
     page_eval_mgmt()
-elif page == "⑤ Agent 管理":
+elif page == "Agent 管理":
     page_agent()

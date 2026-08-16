@@ -21,6 +21,9 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # ── 全局样式（和 V1 保持一致）──
 st.markdown("""
 <style>
+/* 隐藏默认页面导航 */
+[data-testid="stSidebarNav"] { display: none !important; }
+
 /* 全局字体 */
 html, body, [class*="css"] { font-family: "Inter", "Noto Sans SC", sans-serif; }
 
@@ -90,6 +93,26 @@ hr { border: none; border-top: 1px solid #eee; margin: 8px 0; }
 
 st.title("🛒 懂履约的 AI 购物助手 V2.0")
 st.caption("三元组意图识别 · query / compare / aggregate / recommend · 左边对话，右边推理链路")
+
+# ── 昵称输入（多人协作用）──
+if "user_nickname" not in st.session_state:
+    st.session_state.user_nickname = "我"
+
+with st.sidebar:
+    st.markdown("### 👤 用户昵称")
+    nickname = st.text_input(
+        "昵称",
+        value=st.session_state.user_nickname,
+        max_chars=20,
+        help="标记你是谁，便于后台区分不同用户的记录",
+        key="nickname_input",
+    )
+    if nickname != st.session_state.user_nickname:
+        st.session_state.user_nickname = nickname
+
+    st.markdown("---")
+    if st.button("📊 运营工作台", use_container_width=True):
+        st.switch_page("pages/admin.py")
 
 # ── 初始化 ──
 if "rounds" not in st.session_state:
@@ -179,7 +202,7 @@ if submitted and user_input.strip():
 
     with st.spinner("🤔 思考中..."):
         time.sleep(0.5)
-        intent_result, entities, all_data, answer, trace = chat(user_input.strip(), history or None)
+        intent_result, entities, all_data, answer, trace = chat(user_input.strip(), history or None, user=st.session_state.user_nickname)
 
     # ── 写对话日志 ──
     # 提取意图字符串
@@ -194,6 +217,7 @@ if submitted and user_input.strip():
 
     log_entry = {
         "ts": datetime.now().isoformat(),
+        "user": st.session_state.user_nickname,
         "question": user_input.strip(),
         "intent": intent_str,
         "answer": answer,
@@ -210,10 +234,4 @@ if submitted and user_input.strip():
     })
     st.rerun()
 
-# ── 侧边栏：运营后台入口 ──
-with st.sidebar:
-    st.markdown("### ⚙️ 管理")
-    if st.button("📊 运营后台", use_container_width=True):
-        st.switch_page("pages/admin.py")
-    st.markdown("---")
-    st.caption("V2.0 · 三元组意图 · 对比/聚合/推荐")
+st.caption("V2.0 · 三元组意图 · 对比/聚合/推荐")
