@@ -300,7 +300,7 @@ def page_dashboard():
                 _dd.columns = ["label", "val"]
                 st.altair_chart(
                     _alt.Chart(_dd).mark_bar().encode(
-                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=0, labelLimit=40)),
+                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=-45, labelLimit=60)),
                         y="val:Q",
                     ).properties(height=260),
                     use_container_width=True,
@@ -313,7 +313,7 @@ def page_dashboard():
                 _dd.columns = ["label", "val"]
                 st.altair_chart(
                     _alt.Chart(_dd).mark_bar().encode(
-                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=0, labelLimit=40)),
+                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=-45, labelLimit=60)),
                         y="val:Q",
                     ).properties(height=260),
                     use_container_width=True,
@@ -326,7 +326,7 @@ def page_dashboard():
                 _dd.columns = ["label", "val"]
                 st.altair_chart(
                     _alt.Chart(_dd).mark_bar().encode(
-                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=0, labelLimit=40)),
+                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=-45, labelLimit=60)),
                         y="val:Q",
                     ).properties(height=260),
                     use_container_width=True,
