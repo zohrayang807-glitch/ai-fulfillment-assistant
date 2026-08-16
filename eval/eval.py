@@ -94,9 +94,11 @@ def run_case(tc: dict) -> dict:
 
     # ── 3. 禁止回答包含某意图关键词 ──
     banned_intent = tc.get("banned_answer_contains_intent", [])
-    for word in banned_intent:
-        if word in answer_text:
-            failures.append(f"禁止回答含: '{word}'")
+    # 该字段历史上有两种类型：bool（True/False）或 数组（关键词列表）。bool 跳过。
+    if isinstance(banned_intent, list):
+        for word in banned_intent:
+            if word in answer_text:
+                failures.append(f"禁止回答含: '{word}'")
 
     # ── 4. 必须词（任一匹配即可）──
     required_any = tc.get("required_any", [])
