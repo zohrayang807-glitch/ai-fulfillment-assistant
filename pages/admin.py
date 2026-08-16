@@ -243,8 +243,8 @@ def page_dashboard():
     with col_b:
         st.subheader("🎯 Eval 通过率走势")
         if evals:
-            eval_dates = [e.get("ts", "")[:10] for e in evals[-14:]]
-            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[-14:]]
+            eval_dates = [e.get("ts", "")[:10] for e in evals[:14]]
+            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[:14]]
             st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
         else:
             st.info("暂无 Eval 记录")
@@ -465,8 +465,8 @@ def page_eval_mgmt():
         # 通过率趋势
         if evals and len(evals) > 1:
             st.subheader("📈 通过率趋势")
-            eval_dates = [e.get("ts", "")[:10] for e in evals[-14:]]
-            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[-14:]]
+            eval_dates = [e.get("ts", "")[:10] for e in evals[:14]]
+            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[:14]]
             st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
 
         st.markdown("---")
