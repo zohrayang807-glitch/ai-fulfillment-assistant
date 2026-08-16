@@ -621,11 +621,12 @@ def page_eval_mgmt():
                             st.session_state[f"editing_case_{i}"] = False
                             st.rerun()
 
-        # 历史记录
-        if evals:
+        # 历史记录（只显示 Eval run，过滤对话评审）
+        eval_runs = [e for e in evals if "Eval run" in str(e.get("question", ""))]
+        if eval_runs:
             st.markdown("---")
-            st.subheader(f"📋 历史记录（{len(evals)} 次）")
-            for e in reversed(evals[-10:]):
+            st.subheader(f"📋 Eval 历史记录（{len(eval_runs)} 次）")
+            for e in eval_runs[:10]:
                 ts = e.get("ts", "")[:19].replace("T", " ")
                 pr = _eval_rate(e)
                 total = e.get("total") or (e.get("scores") or {}).get("total") or 0
