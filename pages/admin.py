@@ -72,6 +72,16 @@ html, body, [class*="css"] { font-family: "Inter", "Noto Sans SC", sans-serif; }
 
 
 # ── 工具函数 ──
+def _eval_rate(e: dict) -> float:
+    """从评审记录中取 Eval 通过率（兼容 overall / scores.pass_rate / pass_rate）"""
+    v = e.get("overall")
+    if v is None:
+        v = (e.get("scores") or {}).get("pass_rate")
+    if v is None:
+        v = e.get("pass_rate", 0)
+    return v or 0
+
+
 def load_yaml(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -189,7 +199,9 @@ def page_dashboard():
 
     last_eval_pass = "—"
     if evals:
-        last_eval_pass = f"{evals[-1].get('pass_rate', 0):.0%}"
+        _last = evals[-1]
+        _rate = _last.get("overall") or (_last.get("scores") or {}).get("pass_rate") or 0
+        last_eval_pass = f"{_rate:.0%}"
 
     # 统计坏例数
     cases = db.get_cases()
@@ -232,7 +244,7 @@ def page_dashboard():
         st.subheader("🎯 Eval 通过率走势")
         if evals:
             eval_dates = [e.get("ts", "")[:10] for e in evals[-14:]]
-            eval_rates = [round(e.get("pass_rate", 0) * 100, 1) for e in evals[-14:]]
+            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[-14:]]
             st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
         else:
             st.info("暂无 Eval 记录")
@@ -447,14 +459,14 @@ def page_eval_mgmt():
         with col3:
             st.metric("能力矩阵", sections.get("能力矩阵", 0))
         with col4:
-            last_pass = f"{evals[-1].get('pass_rate', 0):.0%}" if evals else "—"
+            last_pass = f"{_eval_rate(evals[-1]):.0%}" if evals else "—"
             st.metric("最近通过率", last_pass)
 
         # 通过率趋势
         if evals and len(evals) > 1:
             st.subheader("📈 通过率趋势")
             eval_dates = [e.get("ts", "")[:10] for e in evals[-14:]]
-            eval_rates = [round(e.get("pass_rate", 0) * 100, 1) for e in evals[-14:]]
+            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[-14:]]
             st.line_chart({"日期": eval_dates, "通过率%": eval_rates}, x="日期", y="通过率%")
 
         st.markdown("---")
@@ -615,7 +627,7 @@ def page_eval_mgmt():
             st.subheader(f"📋 历史记录（{len(evals)} 次）")
             for e in reversed(evals[-10:]):
                 ts = e.get("ts", "")[:19].replace("T", " ")
-                pr = e.get("pass_rate", 0)
+                pr = _eval_rate(e)
                 total = e.get("total", 0)
                 color = "🟢" if pr >= 0.9 else "🟡" if pr >= 0.7 else "🔴"
                 st.markdown(f"{color} `{ts}` — 通过率 **{pr:.0%}** ({total} 条用例)")
