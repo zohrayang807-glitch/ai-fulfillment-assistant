@@ -4,8 +4,9 @@ V2 Eval — 31 条用例自动评测。
 用法: cd ai-portfolio && python eval/eval.py
 """
 
-import json, sys, os
+import json, sys, os, time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
@@ -115,31 +116,44 @@ def run_case(tc: dict) -> dict:
     }
 
 
+def _run_case_timed(idx_tc):
+    """线程池 worker：运行单条用例并计时"""
+    idx, tc = idx_tc
+    t0 = time.time()
+    r = run_case(tc)
+    elapsed = time.time() - t0
+    return idx, tc, r, elapsed
+
+
 def main():
     cases = db.get_cases()
+    workers = min(6, len(cases))  # 并发数 6，避免限流
 
     print(f"\n{'═' * 60}")
-    print(f"  V2 Eval — {len(cases)} 条用例（{'Supabase' if db.is_using_supabase() else '本地 JSONL'}）")
+    print(f"  V2 Eval — {len(cases)} 条用例（并发×{workers}，{'Supabase' if db.is_using_supabase() else '本地 JSONL'}）")
     print(f"{'═' * 60}\n")
 
-    results = []
-    for _idx, tc in enumerate(cases, 1):
-        tc_id = tc.get("id", _idx)
-        section = tc.get("section", "")
-        desc = tc.get("q") or " → ".join(tc.get("turns", []) or [])
-        print(f"[{tc_id:2d}] {desc} ...", end=" ", flush=True)
+    t_start = time.time()
 
-        r = run_case(tc)
-        results.append((tc, r))
+    # ── 并发执行 ──
+    raw_results = [None] * len(cases)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_run_case_timed, (i, tc)): i for i, tc in enumerate(cases)}
+        done_count = 0
+        for fut in as_completed(futures):
+            idx, tc, r, elapsed = fut.result()
+            raw_results[idx] = (tc, r, elapsed)
+            done_count += 1
+            tc_id = tc.get("id", idx + 1)
+            desc = tc.get("q") or " → ".join(tc.get("turns") or [])
+            status = "✅" if r["pass"] else "❌"
+            print(f"[{done_count:2d}/{len(cases)}] {status} [{tc_id:2d}] {desc[:50]} ({elapsed:.1f}s)", flush=True)
 
-        if r["pass"]:
-            print("✅")
-        else:
-            print("❌")
-            for f in r["failures"]:
-                print(f"      ↳ {f}")
-            print(f"      意图: {r['actual_intents']}")
-            print(f"      回答: {r['answer_preview']}")
+    t_total = time.time() - t_start
+
+    # ── 按原始顺序排列 ──
+    results = [(tc, r) for tc, r, _ in raw_results]
+    timings = [elapsed for _, _, elapsed in raw_results]
 
     # ── 汇总 ──
     total = len(results)
@@ -173,6 +187,7 @@ def main():
     print(f"  通过:        {passed}")
     print(f"  失败:        {failed}")
     print(f"  总通过率:    {passed/total*100:.1f}%")
+    print(f"  总耗时:      {t_total:.1f}s（串行预估 {sum(timings):.0f}s，提速 {sum(timings)/max(t_total,0.1):.1f}×）")
     print()
     for s, v in sections.items():
         print(f"  [{s}] {v['pass']}/{v['total']} 通过")
