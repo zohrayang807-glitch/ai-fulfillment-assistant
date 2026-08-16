@@ -463,10 +463,14 @@ def page_eval_mgmt():
         if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
             with st.spinner("正在运行 Eval（预计 1~2 分钟）..."):
                 eval_script = os.path.join(EVAL_DIR, "eval.py")
-                result = subprocess.run(
-                    [sys.executable, eval_script],
-                    capture_output=True, text=True, cwd=BASE_DIR, timeout=180,
-                )
+                try:
+                    result = subprocess.run(
+                        [sys.executable, eval_script],
+                        capture_output=True, text=True, cwd=BASE_DIR, timeout=600,
+                    )
+                except subprocess.TimeoutExpired:
+                    st.error("❌ Eval 超时（超过 10 分钟）。用例过多或模型响应慢，请稍后重试。")
+                    st.stop()
 
             if result.returncode == 0:
                 output = result.stdout
