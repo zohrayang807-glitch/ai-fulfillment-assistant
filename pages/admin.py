@@ -628,7 +628,7 @@ def page_eval_mgmt():
             for e in reversed(evals[-10:]):
                 ts = e.get("ts", "")[:19].replace("T", " ")
                 pr = _eval_rate(e)
-                total = e.get("total", 0)
+                total = e.get("total") or (e.get("scores") or {}).get("total") or 0
                 color = "🟢" if pr >= 0.9 else "🟡" if pr >= 0.7 else "🔴"
                 st.markdown(f"{color} `{ts}` — 通过率 **{pr:.0%}** ({total} 条用例)")
 
