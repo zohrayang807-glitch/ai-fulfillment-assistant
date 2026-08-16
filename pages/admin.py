@@ -291,21 +291,46 @@ def page_dashboard():
                     metric_counter[segments[2]] += 1
 
         col_x, col_y, col_z = st.columns(3)
+        col_x, col_y, col_z = st.columns(3)
         with col_x:
             st.markdown("**操作 (operation)**")
             if op_counter:
                 _d = dict(op_counter.most_common())
-                st.bar_chart(_pd.DataFrame({"操作": list(_d.values())}, index=list(_d.keys())))
+                _dd = _pd.DataFrame({"val": list(_d.values())}, index=list(_d.keys())).reset_index()
+                _dd.columns = ["label", "val"]
+                st.altair_chart(
+                    _alt.Chart(_dd).mark_bar().encode(
+                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=0, labelLimit=40)),
+                        y="val:Q",
+                    ).properties(height=260),
+                    use_container_width=True,
+                )
         with col_y:
             st.markdown("**维度 (dimension)**")
             if dim_counter:
                 _d = dict(dim_counter.most_common())
-                st.bar_chart(_pd.DataFrame({"维度": list(_d.values())}, index=list(_d.keys())))
+                _dd = _pd.DataFrame({"val": list(_d.values())}, index=list(_d.keys())).reset_index()
+                _dd.columns = ["label", "val"]
+                st.altair_chart(
+                    _alt.Chart(_dd).mark_bar().encode(
+                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=0, labelLimit=40)),
+                        y="val:Q",
+                    ).properties(height=260),
+                    use_container_width=True,
+                )
         with col_z:
             st.markdown("**指标 (metric)**")
             if metric_counter:
                 _d = dict(metric_counter.most_common())
-                st.bar_chart(_pd.DataFrame({"指标": list(_d.values())}, index=list(_d.keys())))
+                _dd = _pd.DataFrame({"val": list(_d.values())}, index=list(_d.keys())).reset_index()
+                _dd.columns = ["label", "val"]
+                st.altair_chart(
+                    _alt.Chart(_dd).mark_bar().encode(
+                        x=_alt.X("label:N", axis=_alt.Axis(labelAngle=0, labelLimit=40)),
+                        y="val:Q",
+                    ).properties(height=260),
+                    use_container_width=True,
+                )
 
         st.markdown("---")
         st.subheader("🔗 完整三元组 Top 15")
