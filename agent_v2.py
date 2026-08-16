@@ -217,11 +217,26 @@ def classify_intent_v2(user_question: str, history=None) -> dict:
         max_tokens=MODEL_CFG["max_tokens_intent"],
     )
     _log_token_usage(MODEL_CFG["model"], resp.usage.prompt_tokens, resp.usage.completion_tokens, caller="intent")
-    text = resp.choices[0].message.content.strip()
+    text = (resp.choices[0].message.content or "").strip()
     # 去掉可能的 markdown 代码块包裹
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    return json.loads(text)
+    # 兜底：LLM 偶发返回空/非 JSON 时，重试一次；仍失败返回安全默认，不崩
+    if not text:
+        resp = client.chat.completions.create(
+            model=MODEL_CFG["model"],
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_question}],
+            temperature=MODEL_CFG["temperature_intent"],
+            max_tokens=MODEL_CFG["max_tokens_intent"],
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        # 解析失败时返回安全默认（归类为 other，避免崩溃）
+        return {"chat_intent": "other"}
 
 
 # ═══════════════════════════════════════════════════════
