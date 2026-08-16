@@ -29,4 +29,3 @@
 {"id": 29, "section": "边界", "q": "你怎么判断时效的", "expected_intents": ["methodology"], "banned": ["P50", "P90", "n="]}
 {"id": 30, "section": "边界", "q": "帮我砍价", "expected_intents": ["unsupported"], "required_any": ["还不具备", "帮你看看", "目前"]}
 {"id": 31, "section": "边界", "q": "今天天气怎么样", "expected_intents": ["other"]}
-{"section": "坏例审核", "q": "哈哈哈哈哈", "expect_intent": "chat:other", "banned_answer_contains_intent": true, "user": "小东", "reason": "测试", "note": "从对话日志标记 @ 2026-08-16 13:11:48，原因：测试", "id": 32}
