@@ -175,6 +175,78 @@ def get_evaluations(limit=200):
 # 3. cases（Eval 用例）
 # ═══════════════════════════════════════════════
 
+def normalize_case(case_dict: dict) -> dict:
+    """规范化用例字段，保证写入格式统一。
+    - expected_intents: 数组（兼容 expect_intent 字符串）
+    - banned / required / required_any: 数组（不是 null 或字符串）
+    - banned_answer_contains_intent: bool
+    - turns: 数组或 None（单轮为 None）
+    - 不带 id（Supabase 自动生成）
+    """
+    row = dict(case_dict)
+    row.pop("id", None)  # Supabase 自增 id
+
+    # ── 字段名统一 ──
+    # expect_intent (legacy) → expected_intents (数组)
+    if "expect_intent" in row:
+        val = row.pop("expect_intent")
+        if isinstance(val, str):
+            row["expected_intents"] = [v.strip() for v in val.split(",") if v.strip()]
+        elif isinstance(val, list):
+            row["expected_intents"] = val
+    # banned_words (legacy) → banned
+    if "banned_words" in row:
+        row["banned"] = row.pop("banned_words")
+    # required_words (legacy) → required
+    if "required_words" in row:
+        row["required"] = row.pop("required_words")
+
+    # ── 数组字段强制为 list ──
+    for key in ("expected_intents", "banned", "required", "required_any"):
+        val = row.get(key)
+        if val is None:
+            row[key] = []
+        elif isinstance(val, str):
+            try:
+                parsed = json.loads(val)
+                row[key] = parsed if isinstance(parsed, list) else [val]
+            except Exception:
+                row[key] = [v.strip() for v in val.split(",") if v.strip()]
+        elif not isinstance(val, list):
+            row[key] = [val]
+
+    # ── banned_answer_contains_intent: 必须是 bool ──
+    val = row.get("banned_answer_contains_intent")
+    if val is None:
+        row["banned_answer_contains_intent"] = False
+    elif isinstance(val, list):
+        # 数组（历史遗留）有值即 True，转为 bool（否则写 Supabase boolean 字段会报错）
+        row["banned_answer_contains_intent"] = bool(val)
+    elif not isinstance(val, bool):
+        row["banned_answer_contains_intent"] = bool(val)
+
+    # ── turns: 多轮才有，单轮为 None ──
+    turns = row.get("turns")
+    if turns is not None:
+        if isinstance(turns, str):
+            try:
+                row["turns"] = json.loads(turns)
+            except Exception:
+                row["turns"] = [turns]
+        elif not isinstance(turns, list):
+            row["turns"] = None
+    # 单轮用例不带 turns 字段
+    if row.get("turns") is None:
+        row.pop("turns", None)
+
+    # ── 字符串字段兜底 ──
+    for key in ("q", "section", "user", "reason", "note"):
+        if key not in row:
+            row[key] = ""
+
+    return row
+
+
 def get_cases():
     """获取全部 Eval 用例"""
     client = _get_client()
@@ -188,27 +260,17 @@ def get_cases():
 
 
 def add_case(case_dict):
-    """新增一条 Eval 用例"""
-    # 转换字段名：expected_intents → expected_intents（已经是 jsonb）
-    row = dict(case_dict)
-    # 确保 jsonb 字段是 list
-    for key in ("expected_intents", "banned", "required", "required_any", "turns"):
-        if key in row and isinstance(row[key], str):
-            try:
-                row[key] = json.loads(row[key])
-            except Exception:
-                pass
+    """新增一条 Eval 用例（自动规范化）"""
+    row = normalize_case(case_dict)
 
     client = _get_client()
     if client:
         try:
-            # 移除 legacy id 字段（Supabase 用自增 id）
-            row.pop("id", None)
             client.table("cases").insert(row).execute()
             return True
         except Exception:
             pass
-    _append_jsonl(CASES_FILE, case_dict)
+    _append_jsonl(CASES_FILE, row)
     return True
 
 

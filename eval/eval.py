@@ -8,9 +8,10 @@ import json, sys, os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+import db
 from agent_v2 import chat
-
-CASES_FILE = Path(__file__).resolve().parent / "cases.jsonl"
 
 
 def normalize_intent(intent_result: dict) -> list:
@@ -60,7 +61,7 @@ def run_case(tc: dict) -> dict:
     answer_text = answer if answer else ""
 
     # ── 1. 意图匹配 ──
-    expected = tc.get("expected_intents", [])
+    expected = tc.get("expected_intents") or []
     if expected:
         for exp in expected:
             if exp == "引导":
@@ -87,13 +88,13 @@ def run_case(tc: dict) -> dict:
                     failures.append(f"意图: 期望{exp}, 实际={actual_intents}")
 
     # ── 2. 禁止词 ──
-    banned = tc.get("banned", [])
+    banned = tc.get("banned") or []
     for word in banned:
         if word in answer_text:
             failures.append(f"禁止词: '{word}' 出现在回答中")
 
     # ── 3. 禁止回答包含某意图关键词 ──
-    banned_intent = tc.get("banned_answer_contains_intent", [])
+    banned_intent = tc.get("banned_answer_contains_intent") or []
     # 该字段历史上有两种类型：bool（True/False）或 数组（关键词列表）。bool 跳过。
     if isinstance(banned_intent, list):
         for word in banned_intent:
@@ -101,7 +102,7 @@ def run_case(tc: dict) -> dict:
                 failures.append(f"禁止回答含: '{word}'")
 
     # ── 4. 必须词（任一匹配即可）──
-    required_any = tc.get("required_any", [])
+    required_any = tc.get("required_any") or []
     if required_any:
         if not any(word in answer_text for word in required_any):
             failures.append(f"必须词: 缺少 {required_any} 中的任何一个")
@@ -115,22 +116,17 @@ def run_case(tc: dict) -> dict:
 
 
 def main():
-    cases = []
-    with open(CASES_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                cases.append(json.loads(line))
+    cases = db.get_cases()
 
     print(f"\n{'═' * 60}")
-    print(f"  V2 Eval — {len(cases)} 条用例")
+    print(f"  V2 Eval — {len(cases)} 条用例（{'Supabase' if db.is_using_supabase() else '本地 JSONL'}）")
     print(f"{'═' * 60}\n")
 
     results = []
     for _idx, tc in enumerate(cases, 1):
         tc_id = tc.get("id", _idx)
         section = tc.get("section", "")
-        desc = tc.get("q") or " → ".join(tc.get("turns", []))
+        desc = tc.get("q") or " → ".join(tc.get("turns", []) or [])
         print(f"[{tc_id:2d}] {desc} ...", end=" ", flush=True)
 
         r = run_case(tc)
@@ -190,8 +186,8 @@ def main():
         print(f"{'─' * 60}")
         for tc, r in results:
             if not r["pass"]:
-                desc = tc.get("q") or " → ".join(tc.get("turns", []))
-                print(f"\n  [{tc['id']}] {desc}")
+                desc = tc.get("q") or " → ".join(tc.get("turns") or [])
+                print(f"\n  [{tc.get('id', '?')}] {desc}")
                 for f in r["failures"]:
                     print(f"    ✗ {f}")
                 print(f"    意图: {r['actual_intents']}")
