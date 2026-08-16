@@ -19,11 +19,14 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 # 数据库访问层
 sys.path.insert(0, os.path.dirname(__file__))
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-import db
-
-from agent_v2 import chat
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+    import db
+    from agent_v2 import chat
+except Exception as _import_err:
+    st.error(f"⚠️ 模块加载失败：{_import_err}")
+    st.stop()
 
 # ── 全局样式（和 V1 保持一致）──
 st.markdown("""
