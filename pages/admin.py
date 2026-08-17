@@ -743,15 +743,17 @@ def page_eval_mgmt():
                         st.caption("⚠️ 该坏例已存在")
                     else:
                         reason = st.text_input("为什么是坏例（必填）", key=f"reason_{idx}", placeholder="描述问题...")
+                        # 期望意图：默认填入当前识别意图，可修正（Eval 会用这个意图测试）
+                        exp_intent = st.text_input("期望意图（Eval 测试用）", key=f"exp_intent_{idx}", value=intent or "", placeholder="如 query×seller×ship_time")
                         col_mark, col_del = st.columns([1, 1])
                         with col_mark:
-                            if st.button("🚩 标记为坏例", key=f"bad_{idx}", disabled=not reason.strip(), use_container_width=True):
+                            if st.button("🚩 标记为坏例", key=f"bad_{idx}", disabled=not (reason.strip() and exp_intent.strip()), use_container_width=True):
                                 conv_user = conv.get("user", "我")
-                                # 1. 生成 Eval 用例
+                                # 1. 生成 Eval 用例（用填写的期望意图）
                                 bad_case = {
                                     "section": "坏例审核",
                                     "q": q,
-                                    "expected_intents": [intent],
+                                    "expected_intents": [exp_intent.strip()],
                                     "banned_answer_contains_intent": True,
                                     "user": conv_user,
                                     "reason": reason.strip(),
