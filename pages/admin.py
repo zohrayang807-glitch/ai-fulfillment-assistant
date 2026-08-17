@@ -653,8 +653,12 @@ def page_eval_mgmt():
                     edit_q = st.text_input("问题", value=case.get("q", ""))
                     edit_intent = st.text_input("期望意图", value=case.get("expected_intents", [""])[0] if case.get("expected_intents") else "")
                     edit_section = st.text_input("分类", value=case.get("section", ""))
-                    edit_banned = st.text_input("禁词", value=",".join(case.get("banned", [])))
-                    edit_required = st.text_input("必含词", value=",".join(case.get("required", [])))
+                    _ban = case.get("banned") or []
+                    _req = case.get("required") or []
+                    _ban = _ban if isinstance(_ban, list) else []
+                    _req = _req if isinstance(_req, list) else []
+                    edit_banned = st.text_input("禁词", value=",".join(_ban))
+                    edit_required = st.text_input("必含词", value=",".join(_req))
                     col_save, col_cancel = st.columns(2)
                     with col_save:
                         if st.form_submit_button("💾 保存"):

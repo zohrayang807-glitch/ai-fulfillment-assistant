@@ -261,15 +261,27 @@ def normalize_case(case_dict: dict) -> dict:
 
 
 def get_cases():
-    """获取全部 Eval 用例"""
+    """获取全部 Eval 用例（数组字段 null → [] 规范化）"""
     client = _get_client()
+    data = []
     if client:
         try:
             resp = client.table("cases").select("*").order("id").execute()
-            return resp.data
+            data = resp.data
         except Exception:
             pass
-    return _load_jsonl(CASES_FILE)
+    if not data:
+        data = _load_jsonl(CASES_FILE)
+    # 数组字段 null → []，避免下游 join 崩
+    _LIST_FIELDS = ("banned", "required", "required_any", "expected_intents", "turns")
+    for c in data:
+        for k in _LIST_FIELDS:
+            v = c.get(k)
+            if v is None:
+                c[k] = []
+            elif not isinstance(v, list):
+                c[k] = [v]
+    return data
 
 
 def add_case(case_dict):
