@@ -245,17 +245,19 @@ def normalize_case(case_dict: dict) -> dict:
         if key not in row:
             row[key] = ""
 
-    # ── expected_intents 合法性校验 ──
-    # operation 必须是 query/compare/aggregate/recommend，否则该用例无意义、会导致 Eval 失败
-    _VALID_OPS = {"query", "compare", "aggregate", "recommend"}
+    # ── expected_intents 规范化 ──
+    # 只保留合法 operation 的期望意图；非法格式置空（不崩后台，Eval 里显示未通过即可）
+    _VALID_OPS = {"query", "compare", "aggregate", "recommend", "capability", "引导", "other", "unsupported"}
     _expected = row.get("expected_intents") or []
     if isinstance(_expected, list):
+        _valid = []
         for _exp in _expected:
             if not isinstance(_exp, str) or not _exp:
                 continue
             _op = _exp.split("×")[0].strip()
-            if _op and _op not in _VALID_OPS and _op not in ("capability", "引导", "other", "unsupported"):
-                raise ValueError(f"期望意图格式非法: {_exp}（operation 必须是 query/compare/aggregate/recommend）")
+            if _op in _VALID_OPS:
+                _valid.append(_exp)
+        row["expected_intents"] = _valid
 
     return row
 
