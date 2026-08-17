@@ -761,11 +761,11 @@ def page_eval_mgmt():
                                 }
                                 db.add_case(bad_case)
 
-                                # 2. 生成 BUG 反馈单
+                                # 2. 生成 BUG 反馈单（intent 用用户填的期望意图，并带原因）
                                 db.insert_bug(
                                     user=conv_user,
                                     question=q,
-                                    intent=intent,
+                                    intent=exp_intent.strip(),
                                     answer=conv.get("answer", "")[:500],
                                     status="待修复",
                                     reason=reason.strip(),
