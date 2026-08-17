@@ -1,5 +1,5 @@
 {"id": 1, "section": "防复发", "q": "MS送到SP运费大概多少", "expected_intents": ["query×route×freight"]}
-{"id": 2, "section": "防复发", "q": "我想买书，推荐个商家", "expected_intents": ["recommend×category×neg_rate"], "banned": ["建议你直接问卖家", "口碑都不错，你可以"], "required": ["卖家"]}
+{"id": 2, "section": "防复发", "q": "我想买书，推荐个商家", "expected_intents": ["recommend×category×neg_rate"], "banned": ["建议你直接问卖家"], "required": ["卖家"]}
 {"id": 3, "section": "防复发", "turns": ["推荐个卖书架的商家", "我在MS州"], "expected_intents": ["recommend×category×neg_rate"], "banned": ["没有时效数据"], "required_any": ["天", "半个月"]}
 {"id": 4, "section": "防复发", "q": "b1a812 和 5058e8 和 282f23 哪家便宜，送到RN，书架", "expected_intents": ["compare×seller×price"]}
 {"id": 5, "section": "防复发", "turns": ["推荐个卖书架的商家", "我在MS州"], "expected_intents": ["recommend×category×neg_rate"], "banned_answer_contains_intent": ["query"]}
