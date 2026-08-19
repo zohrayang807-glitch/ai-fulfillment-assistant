@@ -108,11 +108,25 @@ def run_case(tc: dict) -> dict:
         if not any(word in answer_text for word in required_any):
             failures.append(f"必须词: 缺少 {required_any} 中的任何一个")
 
+    # ── 5. 双层评审（Eval 用例也评审，打通质量防线）──
+    review = None
+    try:
+        from agent_v2 import _run_dual_review
+        review = _run_dual_review(q, answer, all_data or [], user="eval")
+        if review:
+            mj = review.get("model_judge") or {}
+            overall = mj.get("overall") or 0
+            if overall < 6:  # 评审分低于 6 判失败
+                failures.append(f"评审低分: {overall}/10 — {mj.get('comment', '')[:40]}")
+    except Exception as e:
+        failures.append(f"评审异常: {str(e)[:50]}")
+
     return {
         "pass": len(failures) == 0,
         "failures": failures,
         "actual_intents": actual_intents,
         "answer_preview": answer_text[:80],
+        "review": review,
     }
 
 
@@ -180,6 +194,12 @@ def main():
     halluc_pass = sum(1 for tc, r in halluc_cases if not any("禁止词:" in f for f in r["failures"]))
     halluc_total = len(halluc_cases)
 
+    # 双层评审通过率（有评审结果的用例，分 >= 6 通过）
+    review_cases = [(tc, r) for tc, r in results if r.get("review")]
+    review_pass = sum(1 for tc, r in review_cases
+                      if not any("评审" in f for f in r["failures"]))
+    review_total = len(review_cases)
+
     print(f"\n{'═' * 60}")
     print(f"  📊 Eval 结果")
     print(f"{'═' * 60}")
@@ -194,6 +214,7 @@ def main():
     print()
     print(f"  意图准确率:  {intent_pass}/{intent_total} ({intent_pass/max(intent_total,1)*100:.1f}%)")
     print(f"  防幻觉通过:  {halluc_pass}/{halluc_total} ({halluc_pass/max(halluc_total,1)*100:.1f}%)")
+    print(f"  评审通过:    {review_pass}/{review_total} ({review_pass/max(review_total,1)*100:.1f}%)")
 
     if failed > 0:
         print(f"\n{'─' * 60}")
