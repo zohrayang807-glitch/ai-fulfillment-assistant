@@ -518,11 +518,12 @@ def page_eval_mgmt():
             last_pass = f"{_eval_rate(evals[-1]):.0%}" if evals else "—"
             st.metric("最近通过率", last_pass)
 
-        # 通过率趋势
-        if evals and len(evals) > 1:
+        # 通过率趋势（只取 Eval run，和指标看板统一）
+        _trend_evals = [e for e in evals if "Eval run" in str(e.get("question", ""))]
+        if _trend_evals and len(_trend_evals) > 1:
             st.subheader("📈 通过率趋势")
-            eval_dates = [str(e.get("ts", ""))[5:10] for e in evals[:14]]
-            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[:14]]
+            eval_dates = [str(e.get("ts", ""))[5:10] for e in _trend_evals[:14]]
+            eval_rates = [round(_eval_rate(e) * 100, 1) for e in _trend_evals[:14]]
             _df = {"日期": eval_dates, "通过率%": eval_rates}
             st.altair_chart(
                 _alt.Chart(_pd.DataFrame(_df)).mark_line(point=True).encode(
