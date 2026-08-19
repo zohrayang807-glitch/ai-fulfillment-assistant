@@ -222,8 +222,8 @@ def page_dashboard():
     with col2:
         st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{total_calls}</div><div class="kpi-label">模型调用数</div></div>""", unsafe_allow_html=True)
     with col3:
-        _tk_display = f"{total_tokens/1000:.1f}K" if total_tokens >= 1000 else str(total_tokens)
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{_tk_display}</div><div class="kpi-label">总 Token</div></div>""", unsafe_allow_html=True)
+        _tk_display = f"{total_tokens/1000:.1f}" if total_tokens >= 1000 else str(total_tokens)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{_tk_display}</div><div class="kpi-label">总 Token（K）</div></div>""", unsafe_allow_html=True)
     with col4:
         st.markdown(f"""<div class="kpi-card"><div class="kpi-value">${total_cost:.2f}</div><div class="kpi-label">预估成本</div></div>""", unsafe_allow_html=True)
     with col5:
@@ -1012,13 +1012,6 @@ def page_agent():
                 st.markdown("**当前已停用：**")
                 for c in disabled_categories:
                     st.markdown(f"- 🚫 {CATS_CN.get(c, c)}（{c}）")
-                with col_b:
-                    if st.button("❌", key=f"del_cat_{i}"):
-                        disabled_categories.pop(i)
-                        filters["disabled_categories"] = disabled_categories
-                        save_yaml(FILTERS_FILE, filters)
-                        reload_agent_config()
-                        st.rerun()
 
         st.markdown("---")
         st.subheader("🔍 当前拦截效果")
