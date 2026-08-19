@@ -383,48 +383,60 @@ def page_model():
 
     with st.form("model_form"):
         col_a, col_b = st.columns(2)
+        # ── 左列：主模型全部参数 ──
         with col_a:
+            st.markdown("**🟢 主模型**（deepseek-chat）")
             current_model = cfg.get("model", "deepseek-v4-flash")
             model_idx = MODEL_OPTIONS.index(current_model) if current_model in MODEL_OPTIONS else 0
-            model_name = st.selectbox("主模型", MODEL_OPTIONS, index=model_idx,
+            model_name = st.selectbox("选择主模型", MODEL_OPTIONS, index=model_idx,
                                        help="回答用户问题的模型")
 
+            st.markdown("**温度参数**")
             temp_intent = st.slider(
-                "主模型·意图识别温度", 0.0, 2.0,
+                "意图识别温度", 0.0, 2.0,
                 value=float(cfg.get("temperature_intent", 0)),
                 step=0.1, help="主模型做意图识别时用，越低越确定，建议 0",
             )
+            temp_answer = st.slider(
+                "回答生成温度", 0.0, 2.0,
+                value=float(cfg.get("temperature_answer", 0.7)),
+                step=0.1, help="主模型回答用户时用，越高越发散，建议 0.5~0.8",
+            )
+
+            st.markdown("**max_tokens**")
             max_tokens_intent = st.number_input(
                 "意图识别 max_tokens", 100, 2000,
                 value=int(cfg.get("max_tokens_intent", 400)), step=50,
-            )
-
-        with col_b:
-            current_judge = cfg.get("judge_model", "deepseek-v4-pro")
-            judge_idx = MODEL_OPTIONS.index(current_judge) if current_judge in MODEL_OPTIONS else 1
-            judge_model = st.selectbox("裁判模型", MODEL_OPTIONS, index=judge_idx,
-                                        help="评审主模型回答质量的模型")
-
-            temp_answer = st.slider(
-                "主模型·回答生成温度", 0.0, 2.0,
-                value=float(cfg.get("temperature_answer", 0.7)),
-                step=0.1, help="主模型回答用户时用，越高越发散，建议 0.5~0.8",
             )
             max_tokens_answer = st.number_input(
                 "回答生成 max_tokens", 100, 2000,
                 value=int(cfg.get("max_tokens_answer", 500)), step=50,
             )
+            max_tokens_multi = st.number_input(
+                "多意图回答 max_tokens", 100, 2000,
+                value=int(cfg.get("max_tokens_multi_answer", 600)), step=50,
+            )
 
+        # ── 右列：裁判模型全部参数 ──
+        with col_b:
+            st.markdown("**🔵 裁判模型**（deepseek-v4-pro）")
+            current_judge = cfg.get("judge_model", "deepseek-v4-pro")
+            judge_idx = MODEL_OPTIONS.index(current_judge) if current_judge in MODEL_OPTIONS else 1
+            judge_model = st.selectbox("选择裁判模型", MODEL_OPTIONS, index=judge_idx,
+                                        help="评审主模型回答质量的模型")
+
+            st.markdown("**温度参数**")
             temp_judge = st.slider(
-                "裁判·评审温度", 0.0, 2.0,
+                "评审温度", 0.0, 2.0,
                 value=float(cfg.get("judge_temperature", 0.3)),
                 step=0.1, help="裁判评审主模型回答时用，建议 0.3（稳定但能分辨）",
             )
 
-        max_tokens_multi = st.number_input(
-            "多意图回答 max_tokens", 100, 2000,
-            value=int(cfg.get("max_tokens_multi_answer", 600)), step=50,
-        )
+            st.markdown("**max_tokens**")
+            max_tokens_judge = st.number_input(
+                "评审 max_tokens", 100, 2000,
+                value=int(cfg.get("judge_max_tokens", 500)), step=50,
+            )
 
         submitted = st.form_submit_button("💾 保存配置", type="primary", use_container_width=True)
         if submitted:
@@ -432,7 +444,7 @@ def page_model():
                 "model": model_name,
                 "judge_model": judge_model,
                 "judge_temperature": temp_judge,
-                "judge_max_tokens": cfg.get("judge_max_tokens", 500),
+                "judge_max_tokens": max_tokens_judge,
                 "temperature_intent": temp_intent,
                 "temperature_answer": temp_answer,
                 "max_tokens_intent": max_tokens_intent,
