@@ -646,9 +646,6 @@ def page_eval_mgmt():
                     user=st.session_state.get("admin_nickname", "admin"),
                 )
                 evals = db.get_evaluations()
-            else:
-                st.error("❌ Eval 运行失败")
-                st.code(result.stderr, language=None)
 
         st.markdown("---")
 
