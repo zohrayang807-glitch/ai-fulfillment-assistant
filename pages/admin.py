@@ -363,15 +363,17 @@ def page_model():
 
     # ── 当前配置预览 ──
     st.subheader("📋 当前配置")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.markdown(f"**主模型**  \n<code style='font-size:0.9rem'>{cfg.get('model', 'deepseek-v4-flash')}</code>", unsafe_allow_html=True)
     with col2:
         st.markdown(f"**裁判模型**  \n<code style='font-size:0.9rem'>{cfg.get('judge_model', 'deepseek-v4-pro')}</code>", unsafe_allow_html=True)
     with col3:
-        st.metric("意图温度", cfg.get("temperature_intent", 0))
+        st.metric("主模型·意图温度", cfg.get("temperature_intent", 0))
     with col4:
-        st.metric("回答温度", cfg.get("temperature_answer", 0.7))
+        st.metric("主模型·回答温度", cfg.get("temperature_answer", 0.7))
+    with col5:
+        st.metric("裁判·评审温度", cfg.get("judge_temperature", 0.3))
 
     st.markdown("---")
 
@@ -388,9 +390,9 @@ def page_model():
                                        help="回答用户问题的模型")
 
             temp_intent = st.slider(
-                "意图识别温度", 0.0, 2.0,
+                "主模型·意图识别温度", 0.0, 2.0,
                 value=float(cfg.get("temperature_intent", 0)),
-                step=0.1, help="越低越确定，意图识别建议 0",
+                step=0.1, help="主模型做意图识别时用，越低越确定，建议 0",
             )
             max_tokens_intent = st.number_input(
                 "意图识别 max_tokens", 100, 2000,
@@ -404,9 +406,9 @@ def page_model():
                                         help="评审主模型回答质量的模型")
 
             temp_answer = st.slider(
-                "回答生成温度", 0.0, 2.0,
+                "主模型·回答生成温度", 0.0, 2.0,
                 value=float(cfg.get("temperature_answer", 0.7)),
-                step=0.1, help="越高越发散，回答建议 0.5~0.8",
+                step=0.1, help="主模型回答用户时用，越高越发散，建议 0.5~0.8",
             )
             max_tokens_answer = st.number_input(
                 "回答生成 max_tokens", 100, 2000,
