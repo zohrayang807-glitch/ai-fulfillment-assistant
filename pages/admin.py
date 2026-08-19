@@ -204,9 +204,11 @@ def page_dashboard():
     total_tokens = sum(t.get("total_tokens", 0) for t in tokens)
     total_cost = sum(calc_cost(t.get("model", ""), t.get("prompt_tokens", 0), t.get("completion_tokens", 0)) for t in tokens)
 
+    # 找最新的 Eval run 记录（对话评审不算）
+    _eval_runs = [e for e in evals if "Eval run" in str(e.get("question", ""))]
     last_eval_pass = "—"
-    if evals:
-        _last = evals[-1]
+    if _eval_runs:
+        _last = _eval_runs[0]
         _rate = _last.get("overall") or (_last.get("scores") or {}).get("pass_rate") or 0
         last_eval_pass = f"{_rate:.0%}"
 
@@ -220,7 +222,8 @@ def page_dashboard():
     with col2:
         st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{total_calls}</div><div class="kpi-label">模型调用数</div></div>""", unsafe_allow_html=True)
     with col3:
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{total_tokens:,}</div><div class="kpi-label">总 Token</div></div>""", unsafe_allow_html=True)
+        _tk_display = f"{total_tokens/1000:.1f}K" if total_tokens >= 1000 else str(total_tokens)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{_tk_display}</div><div class="kpi-label">总 Token</div></div>""", unsafe_allow_html=True)
     with col4:
         st.markdown(f"""<div class="kpi-card"><div class="kpi-value">${total_cost:.2f}</div><div class="kpi-label">预估成本</div></div>""", unsafe_allow_html=True)
     with col5:
@@ -236,13 +239,15 @@ def page_dashboard():
         st.subheader("📅 最近 7 天调用量")
         if tokens:
             date_counts = Counter()
+            today_dt = datetime.now()
+            # 生成近7天 "MM-DD" 格式的日期键
+            date_keys = [(today_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
             for t in tokens:
-                d = t.get("ts", "")[:10]
+                d = t.get("ts", "")[:10]  # YYYY-MM-DD
                 if d:
                     date_counts[d] += 1
-            today_dt = datetime.now()
             dates = [(today_dt - timedelta(days=i)).strftime("%m-%d") for i in range(6, -1, -1)]
-            counts = [date_counts.get(d, 0) for d in dates]
+            counts = [date_counts.get(dk, 0) for dk in date_keys]
             _df = {"日期": dates, "调用数": counts}
             st.altair_chart(
                 _alt.Chart(_pd.DataFrame(_df)).mark_bar().encode(
@@ -256,9 +261,11 @@ def page_dashboard():
 
     with col_b:
         st.subheader("🎯 Eval 通过率走势")
-        if evals:
-            eval_dates = [str(e.get("ts", ""))[5:10] for e in evals[:14]]
-            eval_rates = [round(_eval_rate(e) * 100, 1) for e in evals[:14]]
+        # 只取 Eval run 记录（对话评审不算），避免 0% 和 100% 交替跳变
+        _evals_only = [e for e in evals if "Eval run" in str(e.get("question", ""))]
+        if _evals_only:
+            eval_dates = [str(e.get("ts", ""))[5:10] for e in _evals_only[:14]]
+            eval_rates = [round(_eval_rate(e) * 100, 1) for e in _evals_only[:14]]
             _df = {"日期": eval_dates, "通过率%": eval_rates}
             st.altair_chart(
                 _alt.Chart(_pd.DataFrame(_df)).mark_line(point=True).encode(
@@ -528,22 +535,66 @@ def page_eval_mgmt():
         st.markdown("---")
 
         # 运行 Eval
-        if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
-            with st.spinner("正在运行 Eval（预计 1~2 分钟）..."):
-                eval_script = os.path.join(EVAL_DIR, "eval.py")
-                try:
-                    result = subprocess.run(
-                        [sys.executable, eval_script],
-                        capture_output=True, text=True, cwd=BASE_DIR, timeout=600,
-                    )
-                except subprocess.TimeoutExpired:
-                    st.error("❌ Eval 超时（超过 10 分钟）。用例过多或模型响应慢，请稍后重试。")
-                    st.stop()
+        # Eval 异步后台跑：点按钮启动后台进程，不阻塞 Streamlit 请求（避免云端超时）
+        _EVAL_STATUS_FILE = os.path.join(LOG_DIR, "eval_status.json")
 
-            if result.returncode == 0:
-                output = result.stdout
-                st.success("✅ Eval 完成！")
-                st.code(output, language=None)
+        # 检查是否有正在运行的 Eval
+        _eval_running = False
+        _eval_status = {}
+        if os.path.exists(_EVAL_STATUS_FILE):
+            try:
+                with open(_EVAL_STATUS_FILE, encoding="utf-8") as f:
+                    _eval_status = json.load(f)
+                if _eval_status.get("running"):
+                    _eval_running = True
+            except Exception:
+                pass
+
+        if st.button("▶️ 运行 Eval", type="primary", use_container_width=True):
+            if _eval_running:
+                st.warning("⏳ 已有 Eval 正在运行，请等待完成。")
+            else:
+                # 写"运行中"状态，后台启动
+                import threading
+                with open(_EVAL_STATUS_FILE, "w", encoding="utf-8") as f:
+                    json.dump({"running": True, "ts": datetime.now().isoformat(), "output": ""}, f, ensure_ascii=False)
+                eval_script = os.path.join(EVAL_DIR, "eval.py")
+
+                def _run_eval_bg():
+                    try:
+                        _r = subprocess.run(
+                            [sys.executable, eval_script],
+                            capture_output=True, text=True, cwd=BASE_DIR, timeout=900,
+                        )
+                        with open(_EVAL_STATUS_FILE, "w", encoding="utf-8") as f:
+                            json.dump({"running": False, "ts": datetime.now().isoformat(),
+                                       "returncode": _r.returncode, "output": _r.stdout, "error": _r.stderr}, f, ensure_ascii=False)
+                    except Exception as _e:
+                        with open(_EVAL_STATUS_FILE, "w", encoding="utf-8") as f:
+                            json.dump({"running": False, "ts": datetime.now().isoformat(), "output": "", "error": str(_e)}, f, ensure_ascii=False)
+
+                threading.Thread(target=_run_eval_bg, daemon=True).start()
+                st.success("✅ Eval 已后台启动，跑完自动更新结果（约 1-2 分钟）。可刷新页面查看。")
+                st.rerun()
+
+        # 显示 Eval 状态/结果
+        if _eval_status:
+            if _eval_status.get("running"):
+                st.info("⏳ Eval 正在后台运行，请稍后刷新查看结果...")
+            else:
+                _output = _eval_status.get("output", "")
+                _error = _eval_status.get("error", "")
+                if _output:
+                    st.success("✅ Eval 完成！")
+                    st.code(_output, language=None)
+                elif _error:
+                    st.error(f"❌ Eval 运行失败：{_error[:200]}")
+                else:
+                    st.warning("Eval 无输出。")
+
+            # 有结果时解析并记录
+            if not _eval_status.get("running") and _eval_status.get("output"):
+                output = _eval_status.get("output", "")
 
                 # 提取通过率并记录
                 pass_rate = 0.0
@@ -873,74 +924,94 @@ def page_agent():
 
         col1, col2, col3 = st.columns(3)
 
+        # 预置可选组合（中文标签 → 三元组）
+        COMBO_OPTIONS = [
+            "对比价格（compare×seller×price）",
+            "对比时效（compare×seller×transit_time）",
+            "对比发货（compare×seller×ship_time）",
+            "对比风险（compare×seller×neg_rate）",
+            "推荐卖家（recommend×category×neg_rate）",
+            "查品类运费（query×category×freight）",
+            "查品类价格（query×category×price）",
+            "查路线运费（query×route×freight）",
+            "查路线时效（query×route×transit_time）",
+            "聚合品类运费（aggregate×category×freight）",
+            "聚合路线运费（aggregate×route×freight）",
+        ]
+        # 解析：中文标签 → (op×dim×metric) 三元组
+        COMBO_MAP = {}
+        for opt in COMBO_OPTIONS:
+            _lbl = opt.split("（")[0]
+            _val = opt.split("（")[1].rstrip("）")
+            COMBO_MAP[_lbl] = _val
+
         # ── 禁用组合 ──
         with col1:
-            st.subheader("🚫 禁用组合")
-            st.caption("格式：operation×dimension×metric")
-            new_combo = st.text_input("新增禁用组合", placeholder="compare×seller×price", key="new_combo")
-            if st.button("➕ 添加组合", key="add_combo"):
-                if new_combo and new_combo not in disabled_combinations:
-                    disabled_combinations.append(new_combo)
-                    filters["disabled_combinations"] = disabled_combinations
-                    save_yaml(FILTERS_FILE, filters)
-                    reload_agent_config()
-                    st.rerun()
+            st.subheader("🚫 禁用功能")
+            st.caption("选择要停用的功能（可多选），停用后用户询问会被引导到其他能力")
+            # 当前已禁用的中文标签
+            current_labels = [k for k, v in COMBO_MAP.items() if v in disabled_combinations]
+            selected_labels = st.multiselect("停用功能", list(COMBO_MAP.keys()), default=current_labels, key="combo_multi")
+            if st.button("💾 保存停用功能", key="save_combo"):
+                new_disabled = [COMBO_MAP[lbl] for lbl in selected_labels]
+                filters["disabled_combinations"] = new_disabled
+                save_yaml(FILTERS_FILE, filters)
+                reload_agent_config()
+                st.rerun()
 
-            for i, combo in enumerate(disabled_combinations):
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    st.code(combo)
-                with col_b:
-                    if st.button("❌", key=f"del_combo_{i}"):
-                        disabled_combinations.pop(i)
-                        filters["disabled_combinations"] = disabled_combinations
-                        save_yaml(FILTERS_FILE, filters)
-                        reload_agent_config()
-                        st.rerun()
+            # 展示当前停用的（中文）
+            if disabled_combinations:
+                st.markdown("**当前已停用：**")
+                for combo in disabled_combinations:
+                    _lbl = [k for k, v in COMBO_MAP.items() if v == combo]
+                    display = f"{_lbl[0]}（{combo}）" if _lbl else combo
+                    st.markdown(f"- 🚫 {display}")
 
         # ── 禁用州 ──
+        STATES_CN = {
+            "SP": "圣保罗", "MG": "米纳斯吉拉斯", "RJ": "里约热内卢", "RN": "北里奥格兰德",
+            "BA": "巴伊亚", "PR": "巴拉那", "RS": "南里奥格兰德", "SC": "圣卡塔琳娜",
+            "PE": "伯南布哥", "CE": "塞阿拉", "MS": "南马托格罗索", "GO": "戈亚斯",
+            "DF": "巴西利亚", "AM": "亚马孙", "PA": "帕拉", "MT": "马托格罗索",
+        }
         with col2:
             st.subheader("🚫 禁用州")
-            st.caption("巴西 2 字母大写州代码")
-            new_state = st.text_input("新增禁用州", placeholder="AC", key="new_state", max_chars=2)
-            if st.button("➕ 添加州", key="add_state"):
-                state_upper = new_state.upper().strip()
-                if state_upper and state_upper not in disabled_states:
-                    disabled_states.append(state_upper)
-                    filters["disabled_states"] = disabled_states
-                    save_yaml(FILTERS_FILE, filters)
-                    reload_agent_config()
-                    st.rerun()
-
-            for i, state in enumerate(disabled_states):
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    st.code(state)
-                with col_b:
-                    if st.button("❌", key=f"del_state_{i}"):
-                        disabled_states.pop(i)
-                        filters["disabled_states"] = disabled_states
-                        save_yaml(FILTERS_FILE, filters)
-                        reload_agent_config()
-                        st.rerun()
+            st.caption("停用后，收货地在该州的查询会被拦截")
+            current_state_labels = [k for k in STATES_CN if k in disabled_states]
+            sel_states = st.multiselect("停用州", list(STATES_CN.keys()), default=current_state_labels, key="state_multi",
+                                        format_func=lambda s: f"{s}（{STATES_CN[s]}）")
+            if st.button("💾 保存停用州", key="save_state"):
+                filters["disabled_states"] = sel_states
+                save_yaml(FILTERS_FILE, filters)
+                reload_agent_config()
+                st.rerun()
+            if disabled_states:
+                st.markdown("**当前已停用：**")
+                for s in disabled_states:
+                    st.markdown(f"- 🚫 {s}（{STATES_CN.get(s, '')}）")
 
         # ── 禁用品类 ──
+        CATS_CN = {
+            "office_furniture": "办公家具", "food_drink": "食品饮料", "books_general_interest": "图书",
+            "watches_gifts": "手表礼品", "fashion_shoes": "鞋", "electronics": "电子产品",
+            "audio": "音响", "sports_leisure": "运动", "computers": "电脑", "telephony": "手机",
+            "baby": "母婴", "perfumery": "香水",
+        }
         with col3:
             st.subheader("🚫 禁用品类")
-            st.caption("品类名称（中文或英文）")
-            new_cat = st.text_input("新增禁用品类", placeholder="二手商品", key="new_cat")
-            if st.button("➕ 添加品类", key="add_cat"):
-                if new_cat and new_cat not in disabled_categories:
-                    disabled_categories.append(new_cat)
-                    filters["disabled_categories"] = disabled_categories
-                    save_yaml(FILTERS_FILE, filters)
-                    reload_agent_config()
-                    st.rerun()
-
-            for i, cat in enumerate(disabled_categories):
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    st.code(cat)
+            st.caption("停用后，该类目的查询会被拦截")
+            current_cat_labels = [k for k in CATS_CN if k in disabled_categories]
+            sel_cats = st.multiselect("停用品类", list(CATS_CN.keys()), default=current_cat_labels, key="cat_multi",
+                                      format_func=lambda c: f"{CATS_CN[c]}（{c}）")
+            if st.button("💾 保存停用品类", key="save_cat"):
+                filters["disabled_categories"] = sel_cats
+                save_yaml(FILTERS_FILE, filters)
+                reload_agent_config()
+                st.rerun()
+            if disabled_categories:
+                st.markdown("**当前已停用：**")
+                for c in disabled_categories:
+                    st.markdown(f"- 🚫 {CATS_CN.get(c, c)}（{c}）")
                 with col_b:
                     if st.button("❌", key=f"del_cat_{i}"):
                         disabled_categories.pop(i)
@@ -950,13 +1021,19 @@ def page_agent():
                         st.rerun()
 
         st.markdown("---")
-        st.subheader("🔍 拦截预览")
-        preview_combo = st.text_input("输入三元组预览拦截效果", placeholder="compare×seller×price", key="preview_combo")
-        if preview_combo:
-            if preview_combo in disabled_combinations:
-                st.error(f"🚫 「{preview_combo}」已被禁用，前端会返回拦截引导")
-            else:
-                st.success(f"✅ 「{preview_combo}」未被禁用，正常查询")
+        st.subheader("🔍 当前拦截效果")
+        # 用中文说明当前停用规则会拦截什么，不用用户输入三元组
+        if disabled_combinations or disabled_states or disabled_categories:
+            st.markdown("**根据当前停用规则，以下查询会被拦截：**")
+            for combo in disabled_combinations:
+                _lbl = [k for k, v in COMBO_MAP.items() if v == combo]
+                st.markdown(f"- 🚫 停用**{_lbl[0] if _lbl else combo}** → 用户问这类问题会被引导到其他能力")
+            for s in disabled_states:
+                st.markdown(f"- 🚫 停用**{s}（{STATES_CN.get(s, '')}）** → 收货地在 {s} 的查询会被拦截")
+            for c in disabled_categories:
+                st.markdown(f"- 🚫 停用**{CATS_CN.get(c, c)}（{c}）** → 该类目查询会被拦截")
+        else:
+            st.info("当前没有停用任何功能，所有查询正常。")
 
         # ── 双层评审开关 ──
         st.markdown("---")
