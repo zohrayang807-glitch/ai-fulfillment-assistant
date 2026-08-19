@@ -767,7 +767,14 @@ def page_eval_mgmt():
 
             for i, conv in enumerate(display):
                 idx = start_idx + i
-                ts = conv.get("ts", "")[:19].replace("T", " ")
+                # 转北京时间（UTC+8）
+                try:
+                    from datetime import datetime as _dt, timedelta as _td
+                    _ts_raw = conv.get("ts", "")
+                    _ts_dt = _dt.fromisoformat(_ts_raw.replace("Z", "+00:00")) + _td(hours=8)
+                    ts = _ts_dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    ts = conv.get("ts", "")[:19].replace("T", " ")
                 q = conv.get("question", "")
                 intent = conv.get("intent", "")
                 answer = conv.get("answer", "")[:200]
@@ -777,12 +784,22 @@ def page_eval_mgmt():
                     st.markdown(f"**意图：** `{intent}`")
                     st.markdown(f"**回答：** {answer}")
 
-                    # 关联评审记录
+                    # 关联评审记录（按问题+时间相近匹配，避免匹配到历史旧评审）
                     matched_eval = None
                     for ev in evaluations:
                         if ev.get("question", "") == q:
-                            matched_eval = ev
-                            break
+                            # 时间差在 5 分钟内才算这条对话的评审
+                            ev_ts = ev.get("ts", "")[:19]
+                            conv_ts = conv.get("ts", "")[:19]
+                            try:
+                                from datetime import datetime as _dt
+                                diff = abs((_dt.fromisoformat(ev_ts) - _dt.fromisoformat(conv_ts)).total_seconds())
+                                if diff < 300:
+                                    matched_eval = ev
+                                    break
+                            except Exception:
+                                matched_eval = ev
+                                break
                     if matched_eval:
                         fw = matched_eval.get("framework", {})
                         mj = matched_eval.get("model_judge", {})
