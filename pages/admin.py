@@ -415,6 +415,12 @@ def page_model():
                 value=int(cfg.get("max_tokens_answer", 500)), step=50,
             )
 
+            temp_judge = st.slider(
+                "裁判·评审温度", 0.0, 2.0,
+                value=float(cfg.get("judge_temperature", 0.3)),
+                step=0.1, help="裁判评审主模型回答时用，建议 0.3（稳定但能分辨）",
+            )
+
         max_tokens_multi = st.number_input(
             "多意图回答 max_tokens", 100, 2000,
             value=int(cfg.get("max_tokens_multi_answer", 600)), step=50,
@@ -425,7 +431,7 @@ def page_model():
             new_cfg = {
                 "model": model_name,
                 "judge_model": judge_model,
-                "judge_temperature": cfg.get("judge_temperature", 0.3),
+                "judge_temperature": temp_judge,
                 "judge_max_tokens": cfg.get("judge_max_tokens", 500),
                 "temperature_intent": temp_intent,
                 "temperature_answer": temp_answer,
