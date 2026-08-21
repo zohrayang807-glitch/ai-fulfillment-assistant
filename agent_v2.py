@@ -260,6 +260,8 @@ REQUIRED_PARAMS = {
     ("query", "category", "price"): ["category"],
     # neg_rate × seller：商家必填
     ("query", "seller", "neg_rate"): ["seller_ids"],
+    # category × seller：商家必填（查卖家主要销售品类）
+    ("query", "seller", "category"): ["seller_ids"],
     # ontime_rate / promise_gap × route：收货地必填
     ("query", "route", "ontime_rate"): ["buyer_state"],
     ("query", "route", "promise_gap"): ["buyer_state"],
@@ -533,6 +535,14 @@ def _query_promise_gap_route(entities: dict) -> Optional[dict]:
     return _query_ontime_rate_route(entities)
 
 
+def _query_seller_categories_query(entities: dict) -> Optional[dict]:
+    """category × seller：查询卖家主要销售的品类及口碑表现"""
+    sids = entities.get("seller_ids") or []
+    if not sids:
+        return None
+    return query_seller_categories(sids[0])
+
+
 def _query_recommend(entities: dict) -> Optional[dict]:
     """recommend 操作：query_recommend + 补充 city/state + 截断 seller_id"""
     category = entities.get("category")
@@ -590,6 +600,8 @@ QUERY_DISPATCH = {
     ("query", "category", "price"): _query_price_category,
     # neg_rate
     ("query", "seller", "neg_rate"): _query_neg_rate_seller,
+    # category（卖家主要销售品类）
+    ("query", "seller", "category"): _query_seller_categories_query,
     # ontime_rate / promise_gap
     ("query", "route", "ontime_rate"): _query_ontime_rate_route,
     ("query", "route", "promise_gap"): _query_promise_gap_route,
