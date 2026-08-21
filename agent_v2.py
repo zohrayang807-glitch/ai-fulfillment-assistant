@@ -266,10 +266,8 @@ REQUIRED_PARAMS = {
     # ontime_rate / promise_gap × seller：商家 + 收货地
     ("query", "seller", "ontime_rate"): ["seller_ids", "buyer_state"],
     ("query", "seller", "promise_gap"): ["seller_ids", "buyer_state"],
-    # total_time：同 transit_time
-    ("query", "route", "total_time"): ["buyer_state"],
+    # total_time：同 transit_time（category/route 维度只有运输段，识别为 transit_time，不设 total_time 规则）
     ("query", "seller", "total_time"): ["seller_ids", "buyer_state"],
-    ("query", "category", "total_time"): ["category", "buyer_state"],
     # recommend：品类必填
     ("recommend", "category", None): ["category"],
     # ── aggregate（无需额外参数，返回维度级排名）──
@@ -464,16 +462,6 @@ def _query_total_time_seller(entities: dict) -> Optional[dict]:
     return result
 
 
-def _query_total_time_route(entities: dict) -> Optional[dict]:
-    """total_time × route：无发货段，只返回运输时长"""
-    return _query_transit_time_route(entities)
-
-
-def _query_total_time_category(entities: dict) -> Optional[dict]:
-    """total_time × category：品类推断发货州，返回运输时长"""
-    return _query_transit_time_category(entities)
-
-
 def _query_freight_seller(entities: dict) -> Optional[dict]:
     """freight × seller"""
     sid = entities["seller_ids"][0]
@@ -591,10 +579,8 @@ QUERY_DISPATCH = {
     ("query", "route", "transit_time"): _query_transit_time_route,
     ("query", "seller", "transit_time"): _query_transit_time_seller,
     ("query", "category", "transit_time"): _query_transit_time_category,
-    # total_time
+    # total_time（category/route 维度识别为 transit_time，不映射 total_time）
     ("query", "seller", "total_time"): _query_total_time_seller,
-    ("query", "route", "total_time"): _query_total_time_route,
-    ("query", "category", "total_time"): _query_total_time_category,
     # freight
     ("query", "seller", "freight"): _query_freight_seller,
     ("query", "category", "freight"): _query_freight_category,
@@ -668,6 +654,22 @@ def dispatch_query(intent: dict, entities: dict):
             key=lambda x: _extract_sort_value(x, metric),
             reverse=False,
         )
+        # 加排序锚点：让 LLM 直接看到"谁更快/更便宜"，避免从多字段里误判
+        _RANK_WORDS = {
+            "ship_time": "发货最快",
+            "transit_time": "运输最快",
+            "total_time": "到货最快",
+            "freight": "运费最便宜",
+            "price": "价格最低",
+            "neg_rate": "差评率最低",
+            "ontime_rate": "准时率最高",
+            "promise_gap": "承诺最接近实际",
+        }
+        rank_label = _RANK_WORDS.get(metric, "排名最高")
+        for rank, entry in enumerate(compare_results, start=1):
+            if entry.get("data") is not None:
+                entry["data"] = dict(entry["data"])
+                entry["data"]["_sort_rank"] = f"第{rank}名（{rank_label}）"
         return compare_results
 
     # ── 单对象 → 正常查询 ──
@@ -829,6 +831,55 @@ _BANNED_WORDS = [
 ]
 
 
+def _collect_numeric_values(data) -> list:
+    """递归提取数据中的关键数值字段，用于数据一致性校验。
+    跳过 id/哈希/名称等非业务数值，只取业务指标键名结尾的数值。
+    """
+    _NUM_KEYS = ("median_days", "avg_freight", "avg_total", "avg_price",
+                 "neg_rate", "ontime_rate", "promise_gap", "p90_days",
+                 "ship_days", "transit_days", "total_days", "count", "n")
+    vals = []
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    if any(k.endswith(s) for s in _NUM_KEYS):
+                        vals.append(float(v))
+                elif isinstance(v, (dict, list)):
+                    _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
+    return vals
+
+
+def _num_appears(answer: str, val: float) -> bool:
+    """检查数值是否以约数形式出现在回答中。
+    容差：绝对 1 或相对 10%，且支持中文口语（"3天左右"/"约3.5"）。
+    兼容百分比（0.03 → 3%）。
+    """
+    import re as _re
+    # 收集回答中的所有数字（含小数、百分比）
+    nums = []
+    for m in _re.finditer(r"(\d+(?:\.\d+)?)\s*%?", answer):
+        v = float(m.group(1))
+        # 数据是小数比例（<1）时，回答常用百分数表示（neg_rate 0.03 → "3%"）
+        is_pct = m.group(0).endswith("%")
+        if is_pct:
+            v = v / 100.0
+        nums.append(v)
+    if not nums:
+        return False
+    # 匹配：任一回答数字与数据值之差 < 容差
+    for v in nums:
+        if abs(v - val) <= max(1.0, abs(val) * 0.1):
+            return True
+    return False
+
+
 def _framework_review(question: str, answer: str, all_data: list) -> dict:
     """第一层·框架评审（代码，客观）
     检查：数据一致性、拆段、模糊化、禁词
@@ -840,21 +891,26 @@ def _framework_review(question: str, answer: str, all_data: list) -> dict:
         if w in answer:
             issues.append(f"包含禁词：{w}")
 
-    # 2. 数据一致性：关键数字是否出现在回答中
+    # 2. 数据一致性：关键数字必须出现在回答中（防 LLM 跳过数据自说自话）
     for entry in all_data:
         data = entry.get("data")
         if data is None:
             continue
-        if isinstance(data, dict):
-            # 检查关键数值字段
-            for key in ("median_days", "avg_freight", "avg_total", "neg_rate", "ontime_rate"):
-                val = data.get(key)
-                if val is not None and isinstance(val, (int, float)):
-                    val_str = f"{val:.1f}" if isinstance(val, float) else str(val)
-                    # 如果数据有值但回答中完全没提到该指标的任何数字
-                    # （宽松检查：只要回答里有数字就算通过）
+        vals = _collect_numeric_values(data)
+        if not vals:
+            continue
+        # 至少一个关键数值要在回答中以约数形式出现
+        if not any(_num_appears(answer, v) for v in vals):
+            issues.append(
+                f"数据一致性: 数据含数值({len(vals)}个)但回答未引用任何对应数字"
+            )
 
-    # 3. total_time 拆段检查
+    # 3. 模糊化检查：禁止暴露原始统计口径（铁律第20条）
+    for marker in ("n=", "P50", "P90", "n=", "分位数", "中位数是", "标准差"):
+        if marker in answer:
+            issues.append(f"暴露原始统计口径：{marker}")
+
+    # 4. total_time 拆段检查
     for entry in all_data:
         intent = entry.get("intent", {})
         if intent.get("metric") == "total_time":
@@ -1008,14 +1064,19 @@ def _run_dual_review(question: str, answer: str, all_data: list, user: str = "�
 
 def _save_evaluation(review: dict):
     """将评审结果保存到数据库"""
+    # 注意：_run_dual_review 返回结构里 scores/overall/comment 嵌在 model_judge 里，
+    # 顶层只有 framework/model_judge/ts/user/question/answer
+    mj = review.get("model_judge") or {}
     db.insert_evaluation(
         ts=review.get("ts", ""),
         question=review.get("question", ""),
         answer=review.get("answer", ""),
-        scores=review.get("scores", {}),
-        overall=review.get("overall", 0),
-        comment=review.get("comment", ""),
+        scores=mj.get("scores", {}),
+        overall=mj.get("overall", 0),
+        comment=mj.get("comment", ""),
         user=review.get("user", ""),
+        framework=review.get("framework"),
+        model_judge=mj,
     )
 
 
@@ -1056,10 +1117,6 @@ def _extract_sort_value(entry: dict, metric: str) -> float:
 #  完整流程
 # ═══════════════════════════════════════════════════════
 
-# 全部操作已实现
-_PENDING_OPS = set()
-
-
 def chat(user_question: str, history=None, user: str = "我"):
     """
     V2 完整流程：意图识别 → 参数校验 → 数据查询 → 回答生成
@@ -1067,7 +1124,6 @@ def chat(user_question: str, history=None, user: str = "我"):
     返回: (intent_result, entities, all_data, answer, trace)
     """
     # 每次对话重读配置（后台改模型/prompt 后，助手立即生效，跨进程）
-    reload_config()
     reload_config()  # 每次对话重新加载配置（支持热更新）
     trace = []
 
@@ -1136,12 +1192,6 @@ def chat(user_question: str, history=None, user: str = "我"):
             hint = guidance_map.get((dim, metric), "这个我还不具备呢，但我可以帮你查时效、价格、卖家风险，或者推荐靠谱卖家～")
             missing_hints.append(hint)
             trace.append({"step": f"③查询·{label}", "content": "→ 引导回已有能力"})
-            continue
-
-        # aggregate → 待实现
-        if op in _PENDING_OPS:
-            all_data.append({"intent": intent, "data": None, "note": f"{op} 操作待实现"})
-            trace.append({"step": f"③查询·{label}", "content": "⏳ 待实现"})
             continue
 
         # compare → 多卖家对比（委托 dispatch_query 统一处理）

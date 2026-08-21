@@ -146,6 +146,8 @@ def insert_evaluation(ts=None, question="", answer="", scores=None, overall=0,
         "scores": scores or {},
         "overall": overall,
         "comment": comment,
+        "framework": framework,
+        "model_judge": model_judge,
     }
     client = _get_client()
     if client:
