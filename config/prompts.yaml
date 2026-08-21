@@ -42,7 +42,7 @@ intent: "你是一个意图分类器。将用户问题解析为结构化三元�
   \   - 问\"XX品类送到XX州多久/几天\"（如\"书架送到SP要多久\"\"咖啡送到RN要几天\"），用户提到品类名但没提发货地 → dimension=category（通过品类推断主要发货州预估）\n\
   \   - 只有\"从A州发到B州\"这种明确路线（无品类名）→ dimension=route\n\
   \   - 例：\"买书架送到 SP 要多久\"→ query×category×transit_time（不是 route）；\"从 SP 发到 RN 多久\"→ query×route×transit_time\n\
-  3. 问\"运费/物流费\"→ metric=freight；问\"价格/多少钱/到手价\"→ metric=price\n\
+  3. 问\"运费/物流费\"→ metric=freight；问\"价格/多少钱/到手价\"→ metric=price\n3a. ⚠️ 品类提取强规则——用户提到商品名时，entity.category 必须填写，即使商品名不在上面映射表里，也按语义推断映射到最接近的 Olist 品类。例：\"包/包包/手提包/双肩包/书包/箱包\"→ fashion_bags_accessories，\"电脑/笔记本\"→ computers，\"手机\"→ telephony，\"耳机/音响\"→ audio，\"玩具\"→ toys，\"美妆/护肤\"→ health_beauty，\"宠物\"→ pet_shop，\"运动\"→ sports_leisure，\"厨房/厨具\"→ kitchen_dining_laundry_garden_furniture。严禁因商品名不在列表而填 null\n\
   4. 问\"靠不靠谱/差评多不多\"→ metric=neg_rate\n5. 问\"准时吗/会不会迟到/承诺几天\"→ metric=ontime_rate\
   \ 或 promise_gap\n6. \"买XX哪家靠谱\"→ recommend；\"这家卖家靠谱吗\"→ query×seller×neg_rate\n6a. ⚠️ 问\"XX商家/这家店/这个商家主要卖什么/经营什么品类/有哪些品类\"→ query×seller×category（查卖家主要销售品类）。即使带\"这个商家\"\"这家店\"等前缀也是这个意图，不要归 unsupported\n\
   7. 问\"你是谁/能做什么\"→ capability；问\"你怎么判断\"→ methodology\n8. 跟网购相关但没实现→ unsupported；完全无关→\
@@ -57,7 +57,10 @@ intent: "你是一个意图分类器。将用户问题解析为结构化三元�
   \ \"category\": null, \"buyer_state\": null, \"seller_state\": null}}}}\n\n对话类意图格式：\n\
   {{\"chat_intent\": \"capability\"}}\n\n说明：\n- seller_ids：卖家ID前缀列表，用户提到几个填几个，没有则填空数组\
   \ []\n- category：商品品类英文名（映射到 Olist 品类，如 书→books_general_interest, 咖啡→food_drink,\
-  \ 书架→office_furniture, 手表→watches_gifts, 鞋→fashion_shoes, 床上用品→bed_bath_table）\n\
+  \ 书架→office_furniture, 手表→watches_gifts, 鞋→fashion_shoes, 床上用品→bed_bath_table, \
+  \ 包/包包/箱包→fashion_bags_accessories, 电脑/笔记本→computers, 手机→telephony, \
+  \ 耳机/音响/音箱→audio, 玩具→toys, 美妆/护肤/化妆品→health_beauty, 宠物/宠物用品→pet_shop, \
+  \ 运动/健身/体育→sports_leisure, 厨房/厨具/锅→kitchen_dining_laundry_garden_furniture）\n\
   - buyer_state：收货州（巴西2字母大写，如 SP/RN/MG/RJ/PE）\n- seller_state：卖家发货州（用户明确提到时才填，否则 null）\n\
   - sort_direction：aggregate 时的排序方向，\"desc\"（最贵/最慢，默认）或 \"asc\"（最便宜/最快）\n- dimension\
   \ 为 route 时，buyer_state 必填（收货地）；seller_state 可由商家反查\n- dimension 为 seller 时，seller_ids\
