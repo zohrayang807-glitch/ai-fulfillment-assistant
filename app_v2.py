@@ -105,6 +105,21 @@ hr { border: none; border-top: 1px solid #eee; margin: 8px 0; }
 st.title("🛒 懂履约的 AI 购物助手 V2.0")
 st.caption("三元组意图识别 · query / compare / aggregate / recommend · 左边对话，右边推理链路")
 
+# ── 测试引导（方便用户快速体验各能力）──
+st.markdown("""
+> **💡 你可以试试这些问题：**
+> - b1a812 多久能发货？
+> - 买书架送到 SP 要多久？
+> - b1a812 和 5058e8 谁发货快？
+> - 282f23 和 a3dd39 哪个靠谱？
+> - b1a812 和 5058e8 哪个便宜，送到 RN，书架？
+> - 哪些品类运费最贵？
+> - 哪些路线运费最贵？
+> - 推荐个卖咖啡的，送到 RN？
+> - 这家店靠谱吗？
+> - 你是谁？能做什么？
+""")
+
 # ── 昵称输入（多人协作用）──
 if "user_nickname" not in st.session_state:
     st.session_state.user_nickname = "我"
