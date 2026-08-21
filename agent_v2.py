@@ -927,10 +927,61 @@ def _model_judge_review(question: str, answer: str, all_data: list = None) -> di
         # 去掉可能的 markdown 包裹
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json.loads(text)
+        # 健壮解析：提取第一个 JSON 对象（兼容前后有解释文字/多个 JSON）
+        result = None
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            import re as _re
+            m = _re.search(r"\{.*\}", text, _re.S)
+            if m:
+                try:
+                    result = json.loads(m.group(0))
+                except Exception:
+                    result = None
+        if result is None:
+            # 解析失败重试一次
+            resp2 = client.chat.completions.create(
+                model=MODEL_CFG.get("judge_model", "deepseek-v4-pro"),
+                messages=[
+                    {"role": "system", "content": judge_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.3,
+                max_tokens=MODEL_CFG.get("judge_max_tokens", 500),
+            )
+            text2 = resp2.choices[0].message.content.strip()
+            if text2.startswith("```"):
+                text2 = text2.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            try:
+                result = json.loads(text2)
+            except json.JSONDecodeError:
+                import re as _re2
+                m2 = _re2.search(r"\{.*\}", text2, _re2.S)
+                if m2:
+                    try:
+                        result = json.loads(m2.group(0))
+                    except Exception:
+                        result = None
+        if result is None:
+            raise ValueError("裁判输出无法解析为 JSON")
+        scores = result.get("scores", {})
+        # ── overall = 加权计算（不再由裁判拍脑袋）──
+        # 权重：0.2×准确性 + 0.2×防幻觉 + 0.3×完整性 + 0.3×语气
+        # 一票否决：准确性或防幻觉 <5（编造/严重错误）→ overall 清零
+        acc = scores.get("accuracy", 0) or 0
+        anti = scores.get("anti_hallucination", 0) or 0
+        comp = scores.get("completeness", 0) or 0
+        tone = scores.get("tone", 0) or 0
+
+        if acc < 5 or anti < 5:
+            overall = 0.0
+        else:
+            overall = 0.2 * acc + 0.2 * anti + 0.3 * comp + 0.3 * tone
+
         return {
-            "scores": result.get("scores", {}),
-            "overall": result.get("overall", 0),
+            "scores": scores,
+            "overall": round(overall, 2),
             "comment": result.get("comment", ""),
         }
     except Exception as e:
