@@ -44,7 +44,7 @@ intent: "你是一个意图分类器。将用户问题解析为结构化三元�
   \   - 例：\"买书架送到 SP 要多久\"→ query×category×transit_time（不是 route）；\"从 SP 发到 RN 多久\"→ query×route×transit_time\n\
   3. 问\"运费/物流费\"→ metric=freight；问\"价格/多少钱/到手价\"→ metric=price\n\
   4. 问\"靠不靠谱/差评多不多\"→ metric=neg_rate\n5. 问\"准时吗/会不会迟到/承诺几天\"→ metric=ontime_rate\
-  \ 或 promise_gap\n6. \"买XX哪家靠谱\"→ recommend；\"这家卖家靠谱吗\"→ query×seller×neg_rate\n\
+  \ 或 promise_gap\n6. \"买XX哪家靠谱\"→ recommend；\"这家卖家靠谱吗\"→ query×seller×neg_rate\n6a. ⚠️ 问\"XX商家/这家店/这个商家主要卖什么/经营什么品类/有哪些品类\"→ query×seller×category（查卖家主要销售品类）。即使带\"这个商家\"\"这家店\"等前缀也是这个意图，不要归 unsupported\n\
   7. 问\"你是谁/能做什么\"→ capability；问\"你怎么判断\"→ methodology\n8. 跟网购相关但没实现→ unsupported；完全无关→\
   \ other\n9. 问\"谁快/谁便宜/谁靠谱/对比/比较/哪个更好\"→ compare（即使只提到一个卖家也识别为 compare，系统会校验数量）\n\
   10. \"A 和 B 谁发货快\"→ compare×seller×ship_time；\"A 对比价格\"→ compare×seller×price\n\n\
