@@ -820,6 +820,45 @@ def generate_answer_v2(
     return resp.choices[0].message.content.strip()
 
 
+def _enforce_disclosure(answer: str, all_data: list) -> str:
+    """代码层兜底：确保品类级时效/运费回答包含必要的披露说明。
+
+    提示词规则可能被 LLM 忽略，这里做硬性兜底：
+    1. 品类时效（dimension=category 且含 inferred_seller_state）→
+       若回答未同时满足「提到州名 + 解释按该州预估的原因」，补一句完整说明
+    2. 品类运费（dimension=category 且 metric=freight）→
+       若回答未提"咨询商家/实际运费"，补一句
+    """
+    for entry in all_data:
+        intent = entry.get("intent") or {}
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            continue
+        dim = intent.get("dimension")
+        metric = intent.get("metric")
+        if dim != "category":
+            continue
+
+        # 品类时效：必须同时有"州名"+"按该州预估的因果说明"
+        if metric == "transit_time" and data.get("inferred_seller_state"):
+            state = data["inferred_seller_state"]
+            has_state = state in answer
+            has_cause = ("大多" in answer and "发出" in answer) or "按" in answer and "预估" in answer
+            if not (has_state and has_cause):
+                answer = answer.rstrip() + (
+                    f"\n\n（您通过品类维度查询，系统匹配到该品类大部分商品从 {state} 州发货，"
+                    f"所以按 {state} 发货来预估时效，不是某一家店的实际时效哦～）"
+                )
+        # 品类运费：补"不代表实际+咨询商家"
+        elif metric == "freight":
+            if "咨询" not in answer and "确认" not in answer and "问" not in answer:
+                answer = answer.rstrip() + (
+                    "\n\n（运费是按品类多个卖家的订单估算的平均参考值，"
+                    "不代表任何一家店的实际运费，金额比较敏感，建议你下单前和具体商家确认一下～）"
+                )
+    return answer
+
+
 # ═══════════════════════════════════════════════════════
 #  双层评审
 # ═══════════════════════════════════════════════════════
@@ -1324,6 +1363,8 @@ def chat(user_question: str, history=None, user: str = "我"):
         return intent_result, entities, all_data, answer, trace
 
     answer = generate_answer_v2(user_question, intents, entities, valid_data)
+    # 代码层兜底：确保品类时效/运费包含必要的披露说明（提示词规则可能被 LLM 忽略）
+    answer = _enforce_disclosure(answer, valid_data)
 
     # 如果有待实现的操作，追加提示
     pending = [d for d in all_data if d.get("note") == "待实现"]
