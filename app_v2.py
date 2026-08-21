@@ -99,6 +99,21 @@ hr { border: none; border-top: 1px solid #eee; margin: 8px 0; }
     border-radius: 4px; font-size: 0.78rem; font-weight: 500;
     background: #e8eaf6; color: #3949ab;
 }
+
+/* ── 侧边栏按钮：细边框 + 内部文字，与后台统一 ── */
+[data-testid="stSidebar"] .stButton button {
+    border: 1px solid rgba(49,51,63,0.2);
+    background: #fff;
+    color: rgb(49,51,63);
+    border-radius: 0.5rem;
+    font-weight: 500;
+    transition: background .2s, border-color .2s, color .2s;
+}
+[data-testid="stSidebar"] .stButton button:hover {
+    background: #f0f2f6;
+    border-color: rgba(49,51,63,0.4);
+    color: rgb(49,51,63);
+}
 </style>
 """, unsafe_allow_html=True)
 

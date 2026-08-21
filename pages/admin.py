@@ -74,6 +74,26 @@ html, body, [class*="css"] { font-family: "Inter", "Noto Sans SC", sans-serif; }
 [data-testid="stVegaLiteChart"] text[aria-label*="axis"] {
     writing-mode: horizontal-tb !important;
 }
+
+/* ── 侧边栏导航按钮：细边框 + 内部文字，与助手侧边栏风格统一 ── */
+[data-testid="stSidebar"] .stButton button {
+    border: 1px solid rgba(49,51,63,0.2);
+    background: #fff;
+    color: rgb(49,51,63);
+    border-radius: 0.5rem;
+    font-weight: 500;
+    transition: background .2s, border-color .2s, color .2s;
+}
+[data-testid="stSidebar"] .stButton button:hover {
+    background: #f0f2f6;
+    border-color: rgba(49,51,63,0.4);
+    color: rgb(49,51,63);
+}
+/* 返回助手链接按钮 */
+[data-testid="stSidebar"] .nav-btn:hover {
+    background: #f0f2f6 !important;
+    border-color: rgba(49,51,63,0.4) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -151,6 +171,13 @@ def reload_agent_config():
 
 
 # ── 侧边栏导航 ──
+PAGES = {
+    "指标看板": "dashboard",
+    "模型管理": "model",
+    "测评管理": "eval_mgmt",
+    "Agent 管理": "agent",
+}
+
 with st.sidebar:
     st.markdown("### 📊 运营后台")
 
@@ -168,21 +195,25 @@ with st.sidebar:
 
     st.markdown("---")
 
-PAGES = {
-    "指标看板": "dashboard",
-    "模型管理": "model",
-    "测评管理": "eval_mgmt",
-    "Agent 管理": "agent",
-}
+    # 导航按钮组（细边框+内部文字，与助手侧边栏风格统一）
+    if "admin_page" not in st.session_state:
+        st.session_state.admin_page = "指标看板"
+    for label in PAGES.keys():
+        icon = {"指标看板": "📈", "模型管理": "🧠", "测评管理": "✅", "Agent 管理": "🤖"}.get(label, "📄")
+        if st.button(f"{icon} {label}", key=f"nav_{label}", use_container_width=True):
+            st.session_state.admin_page = label
+    page = st.session_state.admin_page
 
-page = st.sidebar.radio("导航", list(PAGES.keys()), label_visibility="collapsed")
-
-st.sidebar.markdown("---")
-# 多页模式下 switch_page 无法切回主文件，用链接跳转（兼容本地 + Streamlit Cloud）
-st.sidebar.markdown(
-    '<a href="/" target="_self" style="text-decoration:none;font-weight:600">← 返回助手</a>',
-    unsafe_allow_html=True,
-)
+    st.markdown("---")
+    # 返回助手（细边框按钮风格，用链接跳转兼容本地 + Streamlit Cloud）
+    st.markdown(
+        '<a href="/" target="_self" class="nav-btn" style="'
+        'display:block;text-align:center;text-decoration:none;font-weight:500;'
+        'padding:0.5rem 1rem;border:1px solid rgba(49,51,63,0.2);border-radius:0.5rem;'
+        'color:rgb(49,51,63);background:#fff;transition:background .2s,border-color .2s;'
+        '">← 返回助手</a>',
+        unsafe_allow_html=True,
+    )
 
 
 # ════════════════════════════════════════
