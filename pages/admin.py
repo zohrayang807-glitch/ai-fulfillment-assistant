@@ -566,7 +566,9 @@ def page_eval_mgmt():
         with col3:
             st.metric("能力矩阵", sections.get("能力矩阵", 0))
         with col4:
-            last_pass = f"{_eval_rate(evals[-1]):.0%}" if evals else "—"
+            # 只取 Eval run 记录的最新一条（对话评审没有通过率，会造成 0%/误读）
+            _last_eval = next((e for e in evals if "Eval run" in str(e.get("question", ""))), None)
+            last_pass = f"{_eval_rate(_last_eval):.0%}" if _last_eval else "—"
             st.metric("最近通过率", last_pass)
 
         # 通过率趋势（只取 Eval run，和指标看板统一）
