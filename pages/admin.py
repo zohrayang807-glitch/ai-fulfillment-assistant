@@ -199,7 +199,7 @@ with st.sidebar:
     if "admin_page" not in st.session_state:
         st.session_state.admin_page = "指标看板"
     for label in PAGES.keys():
-        icon = {"指标看板": "📈", "模型管理": "⚙️", "测评管理": "✅", "Agent 管理": "🛠️"}.get(label, "📄")
+        icon = {"指标看板": "📈", "模型管理": "⚙️", "测评管理": "🧪", "Agent 管理": "🛠️"}.get(label, "📄")
         if st.button(f"{icon} {label}", key=f"nav_{label}", use_container_width=True):
             st.session_state.admin_page = label
     page = st.session_state.admin_page
