@@ -199,7 +199,7 @@ with st.sidebar:
     if "admin_page" not in st.session_state:
         st.session_state.admin_page = "指标看板"
     for label in PAGES.keys():
-        icon = {"指标看板": "📈", "模型管理": "🧠", "测评管理": "✅", "Agent 管理": "🤖"}.get(label, "📄")
+        icon = {"指标看板": "📈", "模型管理": "⚙️", "测评管理": "✅", "Agent 管理": "🤖"}.get(label, "📄")
         if st.button(f"{icon} {label}", key=f"nav_{label}", use_container_width=True):
             st.session_state.admin_page = label
     page = st.session_state.admin_page
@@ -386,7 +386,7 @@ def page_dashboard():
 # 模块：模型管理
 # ════════════════════════════════════════
 def page_model():
-    st.title("🤖 模型管理")
+    st.title("⚙️ 模型管理")
     st.caption("管理主模型、裁判模型、参数配置，保存后 Agent 下次对话自动生效")
 
     cfg = load_yaml(MODEL_FILE)
