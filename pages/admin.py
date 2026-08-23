@@ -199,7 +199,7 @@ with st.sidebar:
     if "admin_page" not in st.session_state:
         st.session_state.admin_page = "指标看板"
     for label in PAGES.keys():
-        icon = {"指标看板": "📈", "模型管理": "⚙️", "测评管理": "✅", "Agent 管理": "🤖"}.get(label, "📄")
+        icon = {"指标看板": "📈", "模型管理": "⚙️", "测评管理": "✅", "Agent 管理": "🛠️"}.get(label, "📄")
         if st.button(f"{icon} {label}", key=f"nav_{label}", use_container_width=True):
             st.session_state.admin_page = label
     page = st.session_state.admin_page
@@ -974,7 +974,7 @@ def page_eval_mgmt():
 # 模块：Agent 管理
 # ════════════════════════════════════════
 def page_agent():
-    st.title("⚙️ Agent 管理")
+    st.title("🛠️ Agent 管理")
     st.caption("干预开关 · 提示词调优 · 版本回滚 · AB 测试")
 
     tab_filters, tab_prompts = st.tabs(["🛡️ 干预开关", "📝 提示词调优"])
